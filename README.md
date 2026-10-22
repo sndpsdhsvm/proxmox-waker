@@ -153,13 +153,13 @@ connect** to store it and load your machines right away.
 
 A few notes:
 
-- The **node name** matters. If you have a cluster, this is the node that actually
-  runs the VMs you care about. Run `hostname` on the server if unsure.
-- **HTTPS is on by default** and that is correct for Proxmox, which always serves
-  the API over TLS on 8006. It uses a self-signed certificate; the app trusts
-  user-installed CAs, so if you want strict validation, install the Proxmox CA on
-  the phone. Turn HTTPS off only if you have deliberately fronted the API with
-  plain HTTP.
+- The **node name** is optional. Leave it blank and the app discovers it by listing
+  the cluster's nodes, then remembers it. If you do enter a name that doesn't exist,
+  the error lists the real node names so you can correct it. (The old default of
+  `pve` was a common trip-up on hosts named anything else.)
+- **HTTPS is not optional.** Proxmox serves the API over TLS on 8006 and answers
+  cleartext requests with a `301` redirect, so the app always uses `https://`.
+  See the certificate note below.
 - **Turn Wi-Fi off and nothing works.** Wake-on-LAN is a broadcast, and the Proxmox
   API is on your LAN. There's no remote access story here by design.
 
@@ -193,6 +193,7 @@ app/src/main/java/dev/sndp/proxmoxwaker/
 │   └── SettingsRepository.kt    DataStore persistence
 ├── net/
 │   ├── ProxmoxClient.kt         Ticket auth + API calls (OkHttp)
+│   ├── TlsSupport.kt            Accepts Proxmox's per-install self-signed CA
 │   ├── WakeOnLan.kt             Magic packet build + send
 │   └── NetworkUtils.kt          Local IPv4 discovery
 └── ui/
@@ -202,7 +203,117 @@ app/src/main/java/dev/sndp/proxmoxwaker/
     └── Theme.kt                 Proxmox-orange Material 3 theme
 ```
 
-`WakeOnLanTest.kt` covers MAC parsing (four formats) and magic-packet construction.
+Tests (`app/src/test/java/…`):
+
+- `WakeOnLanTest.kt` — MAC parsing in four formats, magic-packet byte layout.
+- `ProxmoxContractTest.kt` — pins the documented API response shapes, string
+  constants and status mapping, so a regression in the client's assumptions is
+  caught without a server.
+
+---
+
+## Hardening the TLS setup (optional)
+
+The app accepts the server's self-signed certificate because that is the only way
+a stock Proxmox install can work. If you would rather have real verification, you
+need the certificate to be trustworthy *and* the phone to know the CA:
+
+1. Install your Proxmox CA (`/etc/pve/pve-root-ca.pem`, or
+   `/etc/pve/local/pve-ssl.pem`'s issuer) on the phone as a user certificate.
+   Android's **Settings → Security → Encryption & credentials → Install a
+   certificate** does this.
+2. Or replace the certificate entirely with one from a public CA by pointing
+   Proxmox at it (`pvenode cert set ...`).
+
+Either way the system trust store validates the connection and the app's fallback
+path is never used. The fingerprint shown in Settings is your reference for what it
+accepted.
+
+---
+
+## How the Proxmox API works (and what this app assumes)
+
+Everything below was verified against a live Proxmox VE host (`192.0.2.10:8006`)
+and cross-checked with the official documentation, because the first version of
+this app got several of these wrong and failed on all of them at once.
+
+**Sources:** [Proxmox VE API wiki](https://pve.proxmox.com/wiki/Proxmox_VE_API)
+and the generated `apidoc.js` schema behind the
+[API viewer](https://pve.proxmox.com/pve-docs/api-viewer/index.html).
+
+### 1. The certificate is self-signed by a per-install CA
+
+```
+subject = OU=PVE Cluster Node, O=Proxmox Virtual Environment, CN=Proxmox.local
+issuer  = CN=Proxmox Virtual Environment, OU=9e2351b9-...-ada22410ed8f,
+          O=PVE Cluster Manager CA
+Verify return code: 21 (unable to verify the first certificate)
+```
+
+That CA is generated when Proxmox is installed and exists only on your server. No
+phone will ever trust it. A stock HTTPS client fails the handshake:
+
+```
+$ curl https://192.0.2.10:8006/api2/json/version
+curl: (60) SSL certificate OpenSSL verify result: unable to get local issuer
+certificate (20)
+```
+
+**This was why the app appeared to do nothing.** `TlsSupport.kt` now handles it:
+
+1. The system trust store is tried first, so a proper certificate (e.g. Let's
+   Encrypt) validates normally.
+2. A rejected certificate is accepted **only** if it identifies itself as a Proxmox
+   certificate *and* covers the host being contacted (SAN or CN) *and* is within its
+   validity window. This mirrors what `pve-apiclient` and `proxmoxer` do.
+3. The accepted SHA-256 fingerprint is stored and shown in Settings, so an
+   unexpected certificate change is visible rather than silent.
+
+It is deliberately not a blanket "trust all" manager: a certificate that doesn't
+look like Proxmox, or that doesn't cover the host, is still rejected.
+
+### 2. Authentication is a ticket in a cookie
+
+```
+POST /access/ticket   username=root@pam&password=...    (form-encoded)
+  → 200 {"data":{"ticket":"PVE:root@pam:...",
+                 "CSRFPreventionToken":"...",
+                 "username":"root@pam"}}
+
+GET  /nodes           Cookie: PVEAuthCookie=<ticket>
+POST /nodes/pve/qemu/100/status/start
+                      Cookie: PVEAuthCookie=<ticket>
+                      CSRFPreventionToken: <token>     ← writes only
+```
+
+- Bad credentials are **`401`** with `{"message":"authentication failure\n","data":null}`.
+- The **`CSRFPreventionToken` header is only required for POST/PUT/DELETE**. Sending
+  it on reads is unnecessary.
+- Tickets last **2 hours**, so the client caches with an expiry and re-logs-in when
+  a call comes back `401`.
+
+### 3. Some obvious-looking choices are wrong
+
+| Assumption | Reality |
+| --- | --- |
+| `/version` is a public endpoint you can use as a connection test | It is **authenticated** (`401 No ticket`), so it's no cheaper than any other call |
+| Plain HTTP on 8006 is a fallback if TLS is awkward | `http://…:8006/...` returns **`301`** to `https://`; TLS is not optional |
+| The node is always called `pve` | It is whatever the host was named; the app now discovers it via `GET /nodes` |
+| The CSRF token goes on every request | Only on write methods |
+
+The connection test therefore calls `GET /nodes`, which both proves the credentials
+and discovers the node name for the guest endpoints.
+
+### Endpoints used
+
+| Call | Purpose |
+| --- | --- |
+| `POST /access/ticket` | log in |
+| `GET /nodes` | connection test + node discovery |
+| `GET /version` | version string for the status message |
+| `GET /nodes/<node>/qemu`, `/lxc` | list guests |
+| `POST /nodes/<node>/{qemu,lxc}/<vmid>/status/start` | start |
+| `POST /nodes/<node>/{qemu,lxc}/<vmid>/status/shutdown` | stop |
 
 ---
 
@@ -213,19 +324,34 @@ app/src/main/java/dev/sndp/proxmoxwaker/
   hardware-backed encrypted — anyone with root on an unlocked phone can read it.
   That is the tradeoff for password login instead of tokens. Use a dedicated
   low-privilege Proxmox user so a leak is contained.
-- All traffic to Proxmox goes over HTTPS by default.
+- All traffic to Proxmox goes over HTTPS, and cleartext is explicitly disallowed in
+  `network_security_config.xml`.
+- Accepting the self-signed certificate is what makes the app work at all. The
+  protection it gives you is scoped acceptance plus a recorded fingerprint, not a
+  full chain of trust. If you want real verification, install your Proxmox CA (or a
+  proper certificate) on the server and the phone; the app will then use the system
+  trust store and skip the fallback entirely.
 - `android:allowBackup="false"` is set on the application.
-- `network_security_config.xml` permits cleartext, needed only for the
-  HTTPS-off case. Tighten it to `cleartextTrafficPermitted="false"` if you never
-  intend to use plain HTTP.
 
 ---
 
 ## If something goes wrong
 
+**"TLS problem talking to …"** — the certificate wasn't accepted. It should be, for a
+stock Proxmox install; check that the host you typed matches the certificate and that
+the server's clock is roughly right. Verify from a computer with:
+
+```bash
+curl -v https://192.0.2.10:8006/api2/json/version
+```
+
+**"Node \"x\" was not found on this host"** — the error names the real node(s). Clear
+the node field to let the app detect it.
+
 **"Cannot connect to …"** — the server isn't up yet or the port is wrong. Confirm
 the host is reachable: `ping 192.0.2.10`, then browse to
-`https://192.0.2.10:8006` from your phone's browser.
+`https://192.0.2.10:8006` from your phone's browser (expect a certificate warning;
+that is the same self-signed cert the app accepts).
 
 **"Login failed"** — the username needs its realm: `root@pam`, not `root`. Also
 check for a locked account or a pending password-change requirement.
@@ -233,8 +359,9 @@ check for a locked account or a pending password-change requirement.
 **"Permission denied (403)"** — the account lacks `VM.Audit` / `VM.PowerMgmt` on
 that guest. See the permissions section above.
 
-**"No machines listed"** — check the **node name**. Listing is per-node; if the VMs
-live on a different node in the cluster, the query returns empty.
+**"No machines listed"** — the credentials work (otherwise you'd get a login error),
+so the node is probably wrong. The app now detects the node itself; if you typed one
+and it was wrong, the error will say so and list the valid names.
 
 **Waking does nothing** — the packet left your phone but nobody acted on it. Check
 BIOS WoL, `ethtool`, and whether the machine is truly in a WoL-capable sleep state.
