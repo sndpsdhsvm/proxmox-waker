@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Proxmox is normally reached over plain HTTP on the LAN (port 8006 API can be
+  either http or https with a self-signed cert). We deliberately allow cleartext
+  traffic because the app is designed for a trusted home network.
+
+  If your Proxmox host uses a self-signed certificate, the app already trusts
+  user-provided CAs on Android 7+; for cleartext-only setups nothing else is needed.
+-->
+<network-security-config>
+    <base-config cleartextTrafficPermitted="true">
+        <trust-anchors>
+            <certificates src="system" />
+            <certificates src="user" />
+        </trust-anchors>
+    </base-config>
+</network-security-config>
