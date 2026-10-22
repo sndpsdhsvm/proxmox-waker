@@ -24,7 +24,6 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
-import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
@@ -34,6 +33,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardType
@@ -53,7 +53,6 @@ fun SettingsScreen(
 ) {
     var host by remember(initial) { mutableStateOf(initial.host) }
     var port by remember(initial) { mutableStateOf(initial.apiPort.toString()) }
-    var useHttps by remember(initial) { mutableStateOf(initial.useHttps) }
     var node by remember(initial) { mutableStateOf(initial.node) }
     var username by remember(initial) { mutableStateOf(initial.username) }
     var password by remember(initial) { mutableStateOf(initial.password) }
@@ -71,13 +70,13 @@ fun SettingsScreen(
     fun snapshot() = ProxmoxConfig(
         host = host.trim(),
         apiPort = port.toIntOrNull() ?: 8006,
-        useHttps = useHttps,
-        node = node.trim().ifBlank { "pve" },
+        node = node.trim(),
         username = username.trim(),
         password = password,
         macAddress = mac.trim(),
         wolPort = wolPort.toIntOrNull() ?: 9,
         wolBroadcast = broadcast.trim().ifBlank { "255.255.255.255" },
+        certFingerprint = initial.certFingerprint,
     )
 
     Scaffold(
@@ -129,26 +128,18 @@ fun SettingsScreen(
                     value = node,
                     onValueChange = { node = it },
                     label = { Text("Node name") },
-                    placeholder = { Text("pve") },
+                    placeholder = { Text("auto") },
                     singleLine = true,
+                    supportingText = { Text("Leave blank to detect") },
                     modifier = Modifier.weight(1f),
                 )
             }
 
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Column(modifier = Modifier.weight(1f)) {
-                    Text("Use HTTPS", style = MaterialTheme.typography.bodyMedium)
-                    Text(
-                        "Turn off only if your API is plain http. Proxmox itself always serves https.",
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                }
-                Switch(checked = useHttps, onCheckedChange = { useHttps = it })
-            }
+            InfoNote(
+                "Proxmox always serves the API over HTTPS on port 8006, so this app always " +
+                    "uses https. The certificate is signed by the server's own private CA, " +
+                    "which the app accepts after checking it really is a Proxmox certificate.",
+            )
 
             OutlinedTextField(
                 value = username,
@@ -247,6 +238,21 @@ fun SettingsScreen(
                 }
             }
 
+            if (initial.certFingerprint.isNotBlank()) {
+                Spacer(Modifier.height(4.dp))
+                SectionTitle("Trusted certificate")
+                InfoNote(
+                    "The app accepted this certificate from the server. If it ever changes " +
+                        "unexpectedly, that is worth investigating.",
+                )
+                Text(
+                    text = initial.certFingerprint,
+                    style = MaterialTheme.typography.labelSmall,
+                    fontFamily = FontFamily.Monospace,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+
             Spacer(Modifier.height(24.dp))
         }
     }
@@ -259,5 +265,14 @@ private fun SectionTitle(text: String) {
         style = MaterialTheme.typography.titleSmall,
         fontWeight = FontWeight.SemiBold,
         color = MaterialTheme.colorScheme.primary,
+    )
+}
+
+@Composable
+private fun InfoNote(text: String) {
+    Text(
+        text = text,
+        style = MaterialTheme.typography.labelSmall,
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
     )
 }

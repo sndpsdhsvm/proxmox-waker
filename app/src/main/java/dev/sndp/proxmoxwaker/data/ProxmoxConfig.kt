@@ -5,9 +5,9 @@ package dev.sndp.proxmoxwaker.data
  *
  * @param host       Hostname or IP of the Proxmox node (e.g. "192.0.2.10").
  * @param apiPort    Proxmox API port. 8006 for the web API, which is the default.
- * @param useHttps   True for https://, false for plain http://.
- * @param node       Proxmox node name as shown in the web UI (e.g. "pve").
- * @param username   Proxmox user, e.g. "root" or "user@pam".
+ * @param node       Proxmox node name. Left blank the app discovers it automatically,
+ *                   which avoids the most common misconfiguration.
+ * @param username   Proxmox user including its realm, e.g. "root@pam".
  * @param password   Password for that user. Stored on-device only.
  * @param macAddress MAC address of the server's NIC, used for Wake-on-LAN.
  * @param wolPort    UDP port for the magic packet. 9 is the standard.
@@ -16,16 +16,22 @@ package dev.sndp.proxmoxwaker.data
 data class ProxmoxConfig(
     val host: String = "",
     val apiPort: Int = 8006,
-    val useHttps: Boolean = true,
-    val node: String = "pve",
+    val node: String = "",
     val username: String = "root@pam",
     val password: String = "",
     val macAddress: String = "",
     val wolPort: Int = 9,
     val wolBroadcast: String = "255.255.255.255",
+    /** SHA-256 of the accepted TLS certificate, shown so changes are visible. */
+    val certFingerprint: String = "",
 ) {
+    /**
+     * The API is always `https`, even when [apiPort] is 8006 on a plain-HTTP setup:
+     * Proxmox answers cleartext requests with a `301` redirect to `https://` and the
+     * API itself is only served over TLS (<https://pve.proxmox.com/wiki/Proxmox_VE_API>).
+     */
     val baseUrl: String
-        get() = "${if (useHttps) "https" else "http"}://$host:$apiPort/api2/json"
+        get() = "https://$host:$apiPort/api2/json"
 
     /** True when we have enough to attempt an API call (host + credentials). */
     val canTalkToApi: Boolean

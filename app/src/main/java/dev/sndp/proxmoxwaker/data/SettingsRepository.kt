@@ -3,7 +3,6 @@ package dev.sndp.proxmoxwaker.data
 import android.content.Context
 import androidx.datastore.core.DataStore
 import androidx.datastore.preferences.core.Preferences
-import androidx.datastore.preferences.core.booleanPreferencesKey
 import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.intPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
@@ -28,13 +27,13 @@ class SettingsRepository(private val context: Context) {
     private object Keys {
         val host = stringPreferencesKey("host")
         val apiPort = intPreferencesKey("api_port")
-        val useHttps = booleanPreferencesKey("use_https")
         val node = stringPreferencesKey("node")
         val username = stringPreferencesKey("username")
         val password = stringPreferencesKey("password")
         val macAddress = stringPreferencesKey("mac_address")
         val wolPort = intPreferencesKey("wol_port")
         val wolBroadcast = stringPreferencesKey("wol_broadcast")
+        val certFingerprint = stringPreferencesKey("cert_fingerprint")
     }
 
     val config: Flow<ProxmoxConfig> = context.dataStore.data.map { prefs ->
@@ -42,13 +41,13 @@ class SettingsRepository(private val context: Context) {
         ProxmoxConfig(
             host = prefs[Keys.host] ?: defaults.host,
             apiPort = prefs[Keys.apiPort] ?: defaults.apiPort,
-            useHttps = prefs[Keys.useHttps] ?: defaults.useHttps,
             node = prefs[Keys.node] ?: defaults.node,
             username = prefs[Keys.username] ?: defaults.username,
             password = prefs[Keys.password] ?: defaults.password,
             macAddress = prefs[Keys.macAddress] ?: defaults.macAddress,
             wolPort = prefs[Keys.wolPort] ?: defaults.wolPort,
             wolBroadcast = prefs[Keys.wolBroadcast] ?: defaults.wolBroadcast,
+            certFingerprint = prefs[Keys.certFingerprint] ?: defaults.certFingerprint,
         )
     }
 
@@ -58,13 +57,25 @@ class SettingsRepository(private val context: Context) {
         context.dataStore.edit { prefs ->
             prefs[Keys.host] = config.host.trim()
             prefs[Keys.apiPort] = config.apiPort
-            prefs[Keys.useHttps] = config.useHttps
             prefs[Keys.node] = config.node.trim()
             prefs[Keys.username] = config.username.trim()
             prefs[Keys.password] = config.password
             prefs[Keys.macAddress] = config.macAddress.trim()
             prefs[Keys.wolPort] = config.wolPort
             prefs[Keys.wolBroadcast] = config.wolBroadcast.trim()
+            prefs[Keys.certFingerprint] = config.certFingerprint
         }
+    }
+
+    /** Records the node discovered during a successful connection test. */
+    suspend fun updateNode(node: String) {
+        if (node.isBlank()) return
+        context.dataStore.edit { it[Keys.node] = node }
+    }
+
+    /** Records the accepted certificate fingerprint. */
+    suspend fun updateFingerprint(fingerprint: String) {
+        if (fingerprint.isBlank()) return
+        context.dataStore.edit { it[Keys.certFingerprint] = fingerprint }
     }
 }

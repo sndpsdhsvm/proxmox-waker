@@ -1,14 +1,19 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!--
-  Proxmox is normally reached over plain HTTP on the LAN (port 8006 API can be
-  either http or https with a self-signed cert). We deliberately allow cleartext
-  traffic because the app is designed for a trusted home network.
+  Proxmox serves its API exclusively over TLS on port 8006. A cleartext request is
+  answered with a 301 redirect to https://, so there is no reason to permit
+  cleartext in this app at all. Locking it off makes that guarantee explicit.
 
-  If your Proxmox host uses a self-signed certificate, the app already trusts
-  user-provided CAs on Android 7+; for cleartext-only setups nothing else is needed.
+  The certificate is signed by the server's own "PVE Cluster Manager CA", which is
+  not in the system trust store. That case is handled in the app by TlsSupport,
+  which validates that the certificate really is a Proxmox certificate for the
+  host before accepting it.
+
+  If you install your Proxmox CA on the device as a user certificate, the system
+  store path below will validate properly and the app will use that instead.
 -->
 <network-security-config>
-    <base-config cleartextTrafficPermitted="true">
+    <base-config cleartextTrafficPermitted="false">
         <trust-anchors>
             <certificates src="system" />
             <certificates src="user" />

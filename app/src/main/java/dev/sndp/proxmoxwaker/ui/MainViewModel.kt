@@ -10,6 +10,7 @@ import dev.sndp.proxmoxwaker.data.SettingsRepository
 import dev.sndp.proxmoxwaker.net.NetworkUtils
 import dev.sndp.proxmoxwaker.net.ProxmoxClient
 import dev.sndp.proxmoxwaker.net.ProxmoxException
+import dev.sndp.proxmoxwaker.net.TlsSupport
 import dev.sndp.proxmoxwaker.net.WakeOnLan
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
@@ -39,7 +40,17 @@ data class UiState(
 class MainViewModel(app: Application) : AndroidViewModel(app) {
 
     private val settings = SettingsRepository(app)
-    private val client = ProxmoxClient()
+
+    /**
+     * The client is built with a TLS layer that accepts Proxmox's per-install
+     * self-signed CA. The callback records the accepted fingerprint so a changed
+     * certificate is visible to the user.
+     */
+    private val client = ProxmoxClient(
+        TlsSupport.client { fingerprint ->
+            viewModelScope.launch { settings.updateFingerprint(fingerprint.sha256) }
+        },
+    )
 
     private val _state = MutableStateFlow(UiState())
     val state: StateFlow<UiState> = _state.asStateFlow()
@@ -206,18 +217,26 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             _state.update { it.copy(phase = Phase.LOADING_GUESTS, error = null, message = null) }
             try {
                 client.forgetSession()
-                val version = client.testConnection(config)
+                val summary = client.testConnection(config)
+
+                // Persist the node the server actually reported, so the guest calls
+                // target a real node instead of the "pve" placeholder.
+                client.resolvedNode?.let { settings.updateNode(it) }
+
                 val guests = if (loadGuestsOnSuccess) {
-                    runCatching { client.listGuests(config) }.getOrDefault(emptyList())
+                    runCatching { client.listGuests(config) }
+                        .onFailure { throw it }
+                        .getOrDefault(emptyList())
                 } else {
                     emptyList()
                 }
+
                 _state.update {
                     it.copy(
                         phase = Phase.IDLE,
                         serverReachable = true,
                         guests = if (loadGuestsOnSuccess) guests else it.guests,
-                        message = "Connected to $version.",
+                        message = "Connected to $summary.",
                     )
                 }
             } catch (e: Exception) {
