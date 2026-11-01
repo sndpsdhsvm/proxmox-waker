@@ -36,7 +36,7 @@ storage — for example on a rooted device or through a full device backup — c
 read the password.
 
 Use a dedicated Proxmox user with only the permissions the app needs. Do not use
-`root@pam` unless you accept that tradeoff. API-token support and Keystore-backed
+the built-in root account unless you accept that tradeoff. API-token support and Keystore-backed
 encryption are tracked as future work.
 
 ### Fingerprint lock

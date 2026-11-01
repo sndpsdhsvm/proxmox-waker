@@ -100,7 +100,8 @@ Note the NIC's MAC address; `ip link show eth0` prints it. You need it for the a
 ### 2. Decide which Proxmox user the app logs in with
 
 You chose username/password login, so the app authenticates as a normal Proxmox
-user. Using `root@pam` works but is a lot of power to hand a phone app.
+user. Using the built-in root account works, but it is a lot of power to hand a
+phone app.
 
 A dedicated user is safer. In the Proxmox UI: **Datacenter → Permissions → Users →
 Add**, then **Permissions → Add → User Permission**:
@@ -226,7 +227,7 @@ The settings screen opens on its own. Fill in:
 | Host or IP | your Proxmox host, e.g. `192.0.2.10` |
 | API port | `8006` (default) |
 | Node name | the node as shown in the Proxmox UI, e.g. `pve` |
-| Username | `root@pam`, or your dedicated user with its realm |
+| Username | your dedicated user with its realm, e.g. `waker@pve` |
 | Password | that user's password |
 | Server MAC address | the NIC's MAC, e.g. `AA:BB:CC:DD:EE:FF` |
 | WoL port | `9` (default) |
@@ -336,8 +337,8 @@ accepted.
 
 ## How the Proxmox API works (and what this app assumes)
 
-Everything below was verified against a live Proxmox VE host (`192.0.2.10:8006`)
-and cross-checked with the official documentation, because the first version of
+Everything below was verified against a live Proxmox VE host and cross-checked
+with the official documentation, because the first version of
 this app got several of these wrong and failed on all of them at once.
 
 **Sources:** [Proxmox VE API wiki](https://pve.proxmox.com/wiki/Proxmox_VE_API)
@@ -378,10 +379,10 @@ look like Proxmox, or that doesn't cover the host, is still rejected.
 ### 2. Authentication is a ticket in a cookie
 
 ```
-POST /access/ticket   username=root@pam&password=...    (form-encoded)
-  → 200 {"data":{"ticket":"PVE:root@pam:...",
+POST /access/ticket   username=waker@pve&password=...    (form-encoded)
+  → 200 {"data":{"ticket":"PVE:waker@pve:...",
                  "CSRFPreventionToken":"...",
-                 "username":"root@pam"}}
+                 "username":"waker@pve"}}
 
 GET  /nodes           Cookie: PVEAuthCookie=<ticket>
 POST /nodes/pve/qemu/100/status/start
@@ -468,7 +469,7 @@ the host is reachable: `ping 192.0.2.10`, then browse to
 `https://192.0.2.10:8006` from your phone's browser (expect a certificate warning;
 that is the same self-signed cert the app accepts).
 
-**"Login failed"** — the username needs its realm: `root@pam`, not `root`. Also
+**"Login failed"** — the username needs its realm: `waker@pve`, not `waker`. Also
 check for a locked account or a pending password-change requirement. If TFA is
 enabled on the account, the app cannot complete the second factor yet; see
 [Limitations](#limitations).
