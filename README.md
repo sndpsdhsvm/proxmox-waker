@@ -1,13 +1,18 @@
 # Proxmox Waker
 
-An Android app that turns on your Proxmox server over your LAN and then lets you
-start its virtual machines from the phone.
+> **Unofficial project.** Not affiliated with, endorsed by, or supported by
+> Proxmox Server Solutions GmbH. "Proxmox" is a trademark of Proxmox Server
+> Solutions GmbH. See [License](#license).
 
-Two jobs, one screen:
+An Android app that turns your Proxmox server on and off over your LAN, then lets
+you manage its virtual machines from the phone.
+
+Three jobs, one screen:
 
 1. **Wake the server** — sends a Wake-on-LAN magic packet to the machine's NIC.
-2. **Start a VM** — logs into the Proxmox API and lists your VMs and containers,
-   each with a Start button.
+2. **Manage guests** — lists your VMs and containers, each with Start or Stop.
+3. **Shut down the node** — sends a graceful ACPI shutdown to the Proxmox host
+   itself, with a confirmation first.
 
 No cloud service, no account, no telemetry. The app talks straight to your Proxmox
 host on your local network.
@@ -16,17 +21,35 @@ host on your local network.
 
 ## What it looks like
 
-- **Top card** — "Wake server". Sends the magic packet, then polls the API every
-  5 seconds until the host answers (up to 5 minutes), and loads the guest list
-  automatically once it does.
-- **Machine list** — every QEMU VM and LXC container on the node, with a colour-coded
-  status dot and a **Start** button when stopped. Running machines offer **Stop**
-  (a graceful ACPI shutdown).
-- **Settings** — host, port, node name, credentials, and the wake-on-LAN details.
-  Opens automatically on first launch.
+- **Node panel** — one calm card for the host. It shows online/offline state, the
+  node name, and the two power actions: **Wake** and **Shut down**. Shutdown asks
+  for confirmation and then watches the API until the node stops answering.
+- **Machine list** — every QEMU VM and LXC container on the node in a single
+  uncluttered list, with a status dot and Start or Stop. Running machines offer
+  **Stop** (a graceful ACPI shutdown).
+- **Settings** — host, port, node name, credentials, the wake-on-LAN details, and
+  the fingerprint lock. **Test** checks without saving; **Save and connect**
+  applies and returns to the main screen, and the system back button does the
+  same. Opens automatically on first launch.
+- **Fingerprint lock** — the controls are hidden behind the phone's fingerprint
+  prompt on a fresh start, including after the app is killed from recents.
+  Switching away and coming back does not re-prompt. It is on by default because
+  the app can power the whole node; turn it off in Settings if you prefer. A
+  device with no enrolled fingerprint is not locked out.
 
-The list refreshes by itself every 15 seconds while the app is on screen, so a VM
-you started from the web UI shows up as running without any tapping.
+The list refreshes by itself every 10 seconds while the app is on screen, and again
+whenever you return to it. Pull down anywhere on the list for a manual refresh. The
+visual language follows Omarchy: near-black plum, warm off-white text, a violet
+accent, and a quieter, type-led layout.
+
+---
+
+## Install
+
+Download the latest signed APK from the [Releases page](../../releases/latest) and
+open it on your phone. Android 8.0 (API 26) or newer is required.
+
+To build it yourself, see [Building](#building).
 
 ---
 
@@ -77,59 +100,111 @@ Add**, then **Permissions → Add → User Permission**:
 - User: your new user
 - Role: **PVEVMUser** covers start/stop and read access
 
-`PVEVMUser` is enough for everything this app does. You do **not** need `PVEAdmin`
-or `root`. The app only calls:
+For guest power actions, `PVEVMUser` on `/vms` is enough. **Node shutdown is
+different:** the built-in `PVEAdmin` role deliberately excludes `Sys.PowerMgmt`, so
+create a small custom role and grant it on the node:
+
+```bash
+pveum role add Sys_Power-only --privs "Sys.PowerMgmt"
+pveum acl modify /vms -user waker@pve -role PVEVMUser
+pveum acl modify /nodes/<node> -user waker@pve -role Sys_Power-only
+```
+
+You do **not** need `PVEAdmin` or `root`. The app only calls:
 
 | Call | Purpose |
 | --- | --- |
 | `POST /access/ticket` | log in |
-| `GET /version` | connection test |
+| `GET /nodes` | connection test + node discovery |
+| `GET /version` | version string |
 | `GET /nodes/<node>/qemu`, `/lxc` | list guests |
 | `POST /nodes/<node>/{qemu,lxc}/<vmid>/status/start` | start |
 | `POST /nodes/<node>/{qemu,lxc}/<vmid>/status/shutdown` | stop |
+| `POST /nodes/<node>/status` (`command=shutdown`) | shut down the node |
 
 ---
 
 ## Building
 
-The toolchain is already set up on this machine:
+Requirements:
 
-- **JDK 17** via mise (`mise use -g java@temurin-17`)
-- **Android SDK** in `~/Android/Sdk` with platform 35 and build-tools 34.0.0 / 35.0.0
+- **JDK 17** (Temurin, OpenJDK, or the JDK bundled with Android Studio)
+- **Android SDK** with platform 35 and build-tools 34.0.0 / 35.0.0
+- `ANDROID_HOME` pointing at the SDK, or a `local.properties` file containing
+  `sdk.dir=/path/to/Android/Sdk`
 
-Build the APK:
-
-```bash
-./build.sh
-```
-
-Nothing to configure by hand: `build.sh` pulls `JAVA_HOME` from mise and points at
-`~/Android/Sdk`. `local.properties` (git-ignored) already records the SDK path.
-
-Other useful invocations:
+The Gradle wrapper downloads Gradle 8.11.1 on first use.
 
 ```bash
-./build.sh test            # run the unit tests
-./build.sh assembleRelease # release APK (unsigned)
-./build.sh clean
+./gradlew assembleDebug
 ```
 
-The debug APK lands at `app/build/outputs/apk/debug/app-debug.apk`.
+The debug APK lands at `app/build/outputs/apk/debug/app-debug.apk`. Run the unit
+tests and lint with:
+
+```bash
+./gradlew testDebugUnitTest lintDebug
+```
+
+`./build.sh` is a convenience wrapper used on the author's machine. It looks for
+JDK 17 through [mise](https://mise.jdx.dev/) and the SDK in `~/Android/Sdk`; you do
+not need it if those tools are already on your `PATH`.
+
+### Release builds
+
+Release builds are minified with R8. They are signed only when these environment
+variables are set:
+
+| Variable | Value |
+| --- | --- |
+| `RELEASE_STORE_FILE` | absolute path to the `.jks` / `.keystore` file |
+| `RELEASE_STORE_PASSWORD` | keystore password |
+| `RELEASE_KEY_ALIAS` | key alias |
+| `RELEASE_KEY_PASSWORD` | key password |
+
+Create a keystore once and keep it somewhere safe (never commit it):
+
+```bash
+keytool -genkeypair -v -keystore release.keystore -alias proxmox-waker \
+  -keyalg RSA -keysize 4096 -validity 10000
+```
+
+Then:
+
+```bash
+RELEASE_STORE_FILE="$PWD/release.keystore" \
+RELEASE_STORE_PASSWORD=... \
+RELEASE_KEY_ALIAS=proxmox-waker \
+RELEASE_KEY_PASSWORD=... \
+./gradlew assembleRelease
+```
+
+The signed APK lands at `app/build/outputs/apk/release/app-release.apk`. Without
+the variables, Gradle produces an unsigned APK that cannot be installed.
+
+For the automated GitHub Release workflow, add these repository secrets:
+
+| Secret | Value |
+| --- | --- |
+| `KEYSTORE_BASE64` | `base64 -w0 release.keystore` |
+| `KEYSTORE_PASSWORD` | keystore password |
+| `KEY_ALIAS` | key alias |
+| `KEY_PASSWORD` | key password |
+
+Pushing a tag such as `v1.0.0` runs the `Release` workflow, which builds and
+attaches `ProxmoxWaker-v1.0.0.apk` plus `SHA256SUMS`.
 
 ### Installing it on your phone
 
-Enable **Developer options → USB debugging** on the phone, plug it in, accept the
-prompt, then:
+Download the APK from the Releases page, or install a local build with:
 
 ```bash
-./install.sh
+adb install -r app/build/outputs/apk/debug/app-debug.apk
 ```
 
-That installs the APK and launches it. Or copy `app-debug.apk` to the phone and
-open it (you'll need to allow installing from unknown sources).
-
-If you have a device connected, `adb devices` should list it. `./build.sh` puts
-`adb` on the PATH for you.
+Enable **Developer options → USB debugging** on the phone first. `./install.sh`
+is a convenience wrapper that builds, installs, and launches the debug APK. If you
+copy the APK to the phone instead, allow installing from unknown sources.
 
 ---
 
@@ -148,7 +223,7 @@ The settings screen opens on its own. Fill in:
 | WoL port | `9` (default) |
 | Broadcast address | `255.255.255.255` (default) |
 
-Tap **Test** to check the connection without saving the guest list, or **Save and
+Tap **Test** to check the connection without saving anything, or **Save and
 connect** to store it and load your machines right away.
 
 A few notes:
@@ -172,14 +247,29 @@ ip link show | grep -A1 "state UP"
 
 ### Usage flow
 
-1. Server is asleep. Open the app, tap **Wake server**.
-2. The card shows "Waiting for the server", and the app polls the API.
-3. When Proxmox finishes booting, the card reads "Server is up" and your VMs appear.
+1. Server is asleep. Open the app, tap **Wake**.
+2. The node panel shows "Waking up", and the app polls the API.
+3. When Proxmox finishes booting, the panel reads "Online" and your VMs appear.
 4. Tap **Start** next to the machine you want. The list updates a couple of seconds
    later to show it running.
+5. To power the host down, tap **Shut down**, confirm, and the app watches the API
+   until the node goes offline. Wake-on-LAN can bring it back later.
 
-If the server is already on, skip step 1 — just tap **Refresh VMs** (the circular
-arrow in the top bar) or let the automatic refresh do it.
+If the server is already on, skip the wake step — the app refreshes on resume, every
+10 seconds while visible, and whenever you pull down on the list.
+
+## Limitations
+
+- **TFA / 2FA is not supported.** When a Proxmox account has TFA enabled, the
+  ticket login needs a second `tfa-challenge` request. The app does not implement
+  that step yet, so those logins fail. Use a dedicated account without TFA until
+  support lands.
+- **One node at a time.** Clusters are not modelled; the app talks to a single
+  Proxmox node.
+- **LAN only.** There is no cloud relay, VPN handling, or remote-access mode.
+- **Credentials are not hardware-backed encrypted.** They live in app-private
+  storage, excluded from backups and device transfer. See
+  [SECURITY.md](SECURITY.md) for the full threat model.
 
 ---
 
@@ -187,7 +277,7 @@ arrow in the top bar) or let the automatic refresh do it.
 
 ```
 app/src/main/java/dev/sndp/proxmoxwaker/
-├── MainActivity.kt              Compose host, starts/stops list polling
+├── MainActivity.kt              Compose host, fingerprint prompt, list polling
 ├── data/
 │   ├── ProxmoxConfig.kt         Config + Guest/GuestType/GuestStatus models
 │   └── SettingsRepository.kt    DataStore persistence
@@ -196,19 +286,23 @@ app/src/main/java/dev/sndp/proxmoxwaker/
 │   ├── TlsSupport.kt            Accepts Proxmox's per-install self-signed CA
 │   ├── WakeOnLan.kt             Magic packet build + send
 │   └── NetworkUtils.kt          Local IPv4 discovery
+├── security/
+│   └── BiometricAuth.kt         Fingerprint availability check + system prompt
 └── ui/
-    ├── MainViewModel.kt         State machine: wake → wait → list → start
-    ├── MainScreen.kt            Main screen
-    ├── SettingsScreen.kt        Config editor
-    └── Theme.kt                 Proxmox-orange Material 3 theme
+    ├── MainViewModel.kt         State machine: wake → wait → list → start/shutdown
+    ├── MainScreen.kt            Node panel, guest list, pull-to-refresh
+    ├── LockScreen.kt            Fingerprint gate shown while locked
+    ├── SettingsScreen.kt        Config editor + app-lock toggle
+    └── Theme.kt                 Omarchy-inspired Material 3 theme
 ```
 
 Tests (`app/src/test/java/…`):
 
-- `WakeOnLanTest.kt` — MAC parsing in four formats, magic-packet byte layout.
+- `WakeOnLanTest.kt` — MAC parsing in four formats, magic-packet byte layout, UDP send.
 - `ProxmoxContractTest.kt` — pins the documented API response shapes, string
   constants and status mapping, so a regression in the client's assumptions is
   caught without a server.
+- `ProxmoxClientTest.kt` — verifies the node shutdown endpoint and form body.
 
 ---
 
@@ -314,6 +408,7 @@ and discovers the node name for the guest endpoints.
 | `GET /nodes/<node>/qemu`, `/lxc` | list guests |
 | `POST /nodes/<node>/{qemu,lxc}/<vmid>/status/start` | start |
 | `POST /nodes/<node>/{qemu,lxc}/<vmid>/status/shutdown` | stop |
+| `POST /nodes/<node>/status` (`command=shutdown`) | shut down the node |
 
 ---
 
@@ -324,14 +419,25 @@ and discovers the node name for the guest endpoints.
   hardware-backed encrypted — anyone with root on an unlocked phone can read it.
   That is the tradeoff for password login instead of tokens. Use a dedicated
   low-privilege Proxmox user so a leak is contained.
+- The app is gated by the phone's fingerprint sensor (androidx.biometric, Class 3
+  biometrics) each time it starts. That includes reopening it after it was killed
+  from recents; merely switching away and back does not re-prompt. This is a local
+  gate: it stops someone who picks up an unlocked phone from opening the app and
+  powering the node or its guests. It does **not** replace the Proxmox password,
+  and it cannot protect data on a phone that is rooted or has the app's storage
+  extracted.
 - All traffic to Proxmox goes over HTTPS, and cleartext is explicitly disallowed in
   `network_security_config.xml`.
 - Accepting the self-signed certificate is what makes the app work at all. The
   protection it gives you is scoped acceptance plus a recorded fingerprint, not a
-  full chain of trust. If you want real verification, install your Proxmox CA (or a
-  proper certificate) on the server and the phone; the app will then use the system
-  trust store and skip the fallback entirely.
+  full chain of trust. The fingerprint is **not pinned**: if the certificate
+  changes, the app records and shows the new one instead of refusing the
+  connection. If you want real verification, install your Proxmox CA (or a proper
+  certificate) on the server and the phone; the app will then use the system trust
+  store and skip the fallback entirely.
 - `android:allowBackup="false"` is set on the application.
+
+See [SECURITY.md](SECURITY.md) for the full threat model and how to report issues.
 
 ---
 
@@ -354,10 +460,13 @@ the host is reachable: `ping 192.0.2.10`, then browse to
 that is the same self-signed cert the app accepts).
 
 **"Login failed"** — the username needs its realm: `root@pam`, not `root`. Also
-check for a locked account or a pending password-change requirement.
+check for a locked account or a pending password-change requirement. If TFA is
+enabled on the account, the app cannot complete the second factor yet; see
+[Limitations](#limitations).
 
 **"Permission denied (403)"** — the account lacks `VM.Audit` / `VM.PowerMgmt` on
-that guest. See the permissions section above.
+that guest, or `Sys.PowerMgmt` on the node for shutdown. See the permissions section
+above.
 
 **"No machines listed"** — the credentials work (otherwise you'd get a login error),
 so the node is probably wrong. The app now detects the node itself; if you typed one
@@ -380,5 +489,23 @@ Things deliberately left out that would fit naturally:
 
 - A home-screen widget with one button for a specific VM.
 - Proxmox API tokens instead of a password (safer, but a bit more setup).
+- TFA challenge support so accounts with 2FA can log in.
+- Encrypting credentials with the Android Keystore.
+- Pinning the accepted TLS certificate, with a "forget certificate" recovery path.
 - Remembering a per-VM "favourite" that the wake flow starts automatically.
-- Shutting the host down from the app when the last VM stops.
+- A scheduled "shut down after idle" option for the whole node.
+- Multi-node / cluster support.
+
+---
+
+## Contributing
+
+See [CONTRIBUTING.md](CONTRIBUTING.md). Bug reports and pull requests are welcome.
+
+## License
+
+[MIT](LICENSE) © 2026 Sandeep Sadhasivam.
+
+This is an unofficial project. "Proxmox" and "Proxmox VE" are trademarks of
+Proxmox Server Solutions GmbH. The app is not affiliated with or endorsed by
+Proxmox Server Solutions GmbH.
