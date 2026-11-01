@@ -26,8 +26,8 @@ host on your local network.
 ## What it looks like
 
 <p align="center">
-  <img src="docs/screenshots/main.png" width="320" alt="Main screen showing the Proxmox node status, power actions, and guest list">
-  <img src="docs/screenshots/settings.png" width="320" alt="Settings screen for the host, credentials, Wake-on-LAN, and app lock">
+  <img src="docs/screenshots/main-redacted.png" width="320" alt="Main screen showing the Proxmox node status, power actions, and guest list">
+  <img src="docs/screenshots/settings-redacted.png" width="320" alt="Settings screen for the host, credentials, Wake-on-LAN, and app lock">
 </p>
 
 - **Node panel** — one calm card for the host. It shows online/offline state, the
