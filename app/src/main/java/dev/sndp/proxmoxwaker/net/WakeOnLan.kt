@@ -1,5 +1,7 @@
 package dev.sndp.proxmoxwaker.net
 
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import java.net.DatagramPacket
 import java.net.DatagramSocket
 import java.net.InetAddress
@@ -49,9 +51,13 @@ object WakeOnLan {
      * packet can leave the interface. Some home routers drop 255.255.255.255, so
      * callers can try a subnet-directed address (e.g. 192.0.2.255) as a fallback.
      *
+     * Address resolution and the socket send are network I/O, so this runs on
+     * [Dispatchers.IO]. Calling it from the main dispatcher would otherwise throw
+     * `NetworkOnMainThreadException` on Android.
+     *
      * @throws IllegalArgumentException when the MAC address cannot be parsed.
      */
-    fun send(macString: String, broadcast: String, port: Int) {
+    suspend fun send(macString: String, broadcast: String, port: Int) = withContext(Dispatchers.IO) {
         val mac = parseMac(macString)
             ?: throw IllegalArgumentException("Invalid MAC address: $macString")
         val packetBytes = magicPacket(mac)
@@ -69,23 +75,24 @@ object WakeOnLan {
      * device's own IPv4 address (for example 192.0.2.255). Returns the addresses
      * that were actually used.
      */
-    fun sendWithFallback(macString: String, broadcast: String, port: Int): List<String> {
-        val attempts = linkedSetOf(broadcast)
-        subnetDirectedBroadcast()?.let { attempts += it }
+    suspend fun sendWithFallback(macString: String, broadcast: String, port: Int): List<String> =
+        withContext(Dispatchers.IO) {
+            val attempts = linkedSetOf(broadcast)
+            subnetDirectedBroadcast()?.let { attempts += it }
 
-        val used = mutableListOf<String>()
-        var lastError: Exception? = null
-        for (target in attempts) {
-            try {
-                send(macString, target, port)
-                used += target
-            } catch (e: Exception) {
-                lastError = e
+            val used = mutableListOf<String>()
+            var lastError: Exception? = null
+            for (target in attempts) {
+                try {
+                    send(macString, target, port)
+                    used += target
+                } catch (e: Exception) {
+                    lastError = e
+                }
             }
+            if (used.isEmpty() && lastError != null) throw lastError
+            used
         }
-        if (used.isEmpty() && lastError != null) throw lastError
-        return used
-    }
 
     /**
      * Best-effort subnet broadcast address, e.g. 192.0.2.10 -> 192.0.2.255.

@@ -1,5 +1,6 @@
 package dev.sndp.proxmoxwaker.ui
 
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -8,15 +9,20 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Close
-import androidx.compose.material.icons.filled.Visibility
-import androidx.compose.material.icons.filled.VisibilityOff
+import androidx.compose.material.icons.outlined.Close
+import androidx.compose.material.icons.outlined.Fingerprint
+import androidx.compose.material.icons.outlined.Visibility
+import androidx.compose.material.icons.outlined.VisibilityOff
+import androidx.compose.material.icons.outlined.WifiOff
 import androidx.compose.material3.Button
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -24,15 +30,20 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Surface
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
+import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
@@ -40,6 +51,7 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import dev.sndp.proxmoxwaker.data.ProxmoxConfig
 import dev.sndp.proxmoxwaker.net.WakeOnLan
 
@@ -50,15 +62,26 @@ fun SettingsScreen(
     onSave: (ProxmoxConfig) -> Unit,
     onTest: (ProxmoxConfig) -> Unit,
     onClose: () -> Unit,
+    statusMessage: String? = null,
+    statusError: String? = null,
+    testing: Boolean = false,
+    requireBiometric: Boolean = true,
+    biometricAvailable: Boolean = false,
+    biometricMessage: String? = null,
+    onToggleBiometric: (Boolean) -> Unit = {},
+    localNetworkAvailable: Boolean = true,
 ) {
-    var host by remember(initial) { mutableStateOf(initial.host) }
-    var port by remember(initial) { mutableStateOf(initial.apiPort.toString()) }
-    var node by remember(initial) { mutableStateOf(initial.node) }
-    var username by remember(initial) { mutableStateOf(initial.username) }
-    var password by remember(initial) { mutableStateOf(initial.password) }
-    var mac by remember(initial) { mutableStateOf(initial.macAddress) }
-    var wolPort by remember(initial) { mutableStateOf(initial.wolPort.toString()) }
-    var broadcast by remember(initial) { mutableStateOf(initial.wolBroadcast) }
+    // Seeded once when the screen opens, then owned by the form. Keying these on
+    // `initial` would wipe what the user is typing whenever a background update
+    // lands, for example the node name discovered by "Test".
+    var host by rememberSaveable { mutableStateOf(initial.host) }
+    var port by rememberSaveable { mutableStateOf(initial.apiPort.toString()) }
+    var node by rememberSaveable { mutableStateOf(initial.node) }
+    var username by rememberSaveable { mutableStateOf(initial.username) }
+    var password by rememberSaveable { mutableStateOf(initial.password) }
+    var mac by rememberSaveable { mutableStateOf(initial.macAddress) }
+    var wolPort by rememberSaveable { mutableStateOf(initial.wolPort.toString()) }
+    var broadcast by rememberSaveable { mutableStateOf(initial.wolBroadcast) }
     var showPassword by remember { mutableStateOf(false) }
 
     val macValid = mac.isBlank() || WakeOnLan.parseMac(mac) != null
@@ -80,12 +103,28 @@ fun SettingsScreen(
     )
 
     Scaffold(
+        containerColor = MaterialTheme.colorScheme.background,
         topBar = {
             TopAppBar(
-                title = { Text("Server settings") },
+                colors = TopAppBarDefaults.topAppBarColors(
+                    containerColor = Color.Transparent,
+                    scrolledContainerColor = Color.Transparent,
+                ),
+                title = {
+                    Column {
+                        Text("Settings", style = MaterialTheme.typography.titleMedium)
+                        Text(
+                            text = "PROXMOX WAKER",
+                            style = MaterialTheme.typography.labelSmall,
+                            fontFamily = FontFamily.Monospace,
+                            letterSpacing = 1.sp,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                },
                 navigationIcon = {
                     IconButton(onClick = onClose) {
-                        Icon(Icons.Default.Close, contentDescription = "Close")
+                        Icon(Icons.Outlined.Close, contentDescription = "Close")
                     }
                 },
             )
@@ -96,10 +135,39 @@ fun SettingsScreen(
                 .fillMaxSize()
                 .padding(padding)
                 .verticalScroll(rememberScrollState())
-                .padding(16.dp),
-            verticalArrangement = Arrangement.spacedBy(12.dp),
+                .padding(start = 20.dp, end = 20.dp, top = 8.dp, bottom = 32.dp),
+            verticalArrangement = Arrangement.spacedBy(14.dp),
         ) {
             SectionTitle("Proxmox API")
+
+            if (!localNetworkAvailable) {
+                Surface(
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(12.dp),
+                    color = MaterialTheme.colorScheme.surfaceVariant,
+                    contentColor = MaterialTheme.colorScheme.onSurface,
+                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
+                ) {
+                    Row(
+                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Icon(
+                            imageVector = Icons.Outlined.WifiOff,
+                            contentDescription = null,
+                            modifier = Modifier.size(18.dp),
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                        Spacer(Modifier.width(10.dp))
+                        Text(
+                            text = "No local network connection. Join Wi-Fi or Ethernet " +
+                                "before testing — the Proxmox API is on your LAN.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                }
+            }
 
             OutlinedTextField(
                 value = host,
@@ -111,6 +179,7 @@ fun SettingsScreen(
                     keyboardType = KeyboardType.Uri,
                     imeAction = ImeAction.Next,
                 ),
+                shape = RoundedCornerShape(14.dp),
                 modifier = Modifier.fillMaxWidth(),
             )
 
@@ -122,6 +191,7 @@ fun SettingsScreen(
                     singleLine = true,
                     isError = !portValid,
                     keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                    shape = RoundedCornerShape(14.dp),
                     modifier = Modifier.weight(1f),
                 )
                 OutlinedTextField(
@@ -131,14 +201,14 @@ fun SettingsScreen(
                     placeholder = { Text("auto") },
                     singleLine = true,
                     supportingText = { Text("Leave blank to detect") },
+                    shape = RoundedCornerShape(14.dp),
                     modifier = Modifier.weight(1f),
                 )
             }
 
             InfoNote(
-                "Proxmox always serves the API over HTTPS on port 8006, so this app always " +
-                    "uses https. The certificate is signed by the server's own private CA, " +
-                    "which the app accepts after checking it really is a Proxmox certificate.",
+                "The API is always HTTPS on port 8006. The app trusts the server's own " +
+                    "certificate after checking it really is a Proxmox certificate.",
             )
 
             OutlinedTextField(
@@ -148,6 +218,8 @@ fun SettingsScreen(
                 placeholder = { Text("root@pam") },
                 supportingText = { Text("Include the realm, e.g. root@pam or myuser@pve") },
                 singleLine = true,
+                keyboardOptions = KeyboardOptions(imeAction = ImeAction.Next),
+                shape = RoundedCornerShape(14.dp),
                 modifier = Modifier.fillMaxWidth(),
             )
 
@@ -165,19 +237,26 @@ fun SettingsScreen(
                     IconButton(onClick = { showPassword = !showPassword }) {
                         Icon(
                             imageVector = if (showPassword) {
-                                Icons.Default.VisibilityOff
+                                Icons.Outlined.VisibilityOff
                             } else {
-                                Icons.Default.Visibility
+                                Icons.Outlined.Visibility
                             },
                             contentDescription = if (showPassword) "Hide password" else "Show password",
                         )
                     }
                 },
                 supportingText = { Text("Stored on this device only, and never included in backups.") },
+                keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done),
+                shape = RoundedCornerShape(14.dp),
                 modifier = Modifier.fillMaxWidth(),
             )
 
-            Spacer(Modifier.height(4.dp))
+            InfoNote(
+                "Starting and stopping guests needs VM.Audit and VM.PowerMgmt. " +
+                    "Shutting down the node itself needs Sys.PowerMgmt.",
+            )
+
+            Spacer(Modifier.height(6.dp))
             SectionTitle("Wake-on-LAN")
 
             OutlinedTextField(
@@ -196,6 +275,7 @@ fun SettingsScreen(
                         },
                     )
                 },
+                shape = RoundedCornerShape(14.dp),
                 modifier = Modifier.fillMaxWidth(),
             )
 
@@ -207,6 +287,7 @@ fun SettingsScreen(
                     singleLine = true,
                     isError = !wolPortValid,
                     keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                    shape = RoundedCornerShape(14.dp),
                     modifier = Modifier.weight(1f),
                 )
                 OutlinedTextField(
@@ -215,8 +296,61 @@ fun SettingsScreen(
                     label = { Text("Broadcast address") },
                     placeholder = { Text("255.255.255.255") },
                     singleLine = true,
+                    shape = RoundedCornerShape(14.dp),
                     modifier = Modifier.weight(1f),
                 )
+            }
+
+            Spacer(Modifier.height(6.dp))
+            SectionTitle("App lock")
+
+            Surface(
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(14.dp),
+                color = MaterialTheme.colorScheme.surfaceVariant,
+                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
+            ) {
+                Row(
+                    modifier = Modifier.padding(horizontal = 14.dp, vertical = 12.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Icon(
+                        imageVector = Icons.Outlined.Fingerprint,
+                        contentDescription = null,
+                        modifier = Modifier.size(22.dp),
+                        tint = if (requireBiometric) {
+                            MaterialTheme.colorScheme.primary
+                        } else {
+                            MaterialTheme.colorScheme.onSurfaceVariant
+                        },
+                    )
+                    Spacer(Modifier.width(12.dp))
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            text = "Require fingerprint",
+                            style = MaterialTheme.typography.titleSmall,
+                        )
+                        Spacer(Modifier.height(2.dp))
+                        Text(
+                            text = when {
+                                requireBiometric ->
+                                    "Required each time the app starts, including after it is killed."
+                                biometricAvailable ->
+                                    "Ask for your fingerprint each time the app starts."
+                                else ->
+                                    biometricMessage ?: "Fingerprint unlock is not available on this device."
+                            },
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                    Spacer(Modifier.width(8.dp))
+                    Switch(
+                        checked = requireBiometric,
+                        onCheckedChange = onToggleBiometric,
+                        enabled = biometricAvailable || requireBiometric,
+                    )
+                }
             }
 
             Spacer(Modifier.height(8.dp))
@@ -224,22 +358,49 @@ fun SettingsScreen(
             Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                 Button(
                     onClick = { onSave(snapshot()) },
-                    enabled = canSave,
+                    enabled = canSave && !testing,
+                    shape = RoundedCornerShape(14.dp),
                     modifier = Modifier.weight(1f),
                 ) {
                     Text("Save and connect")
                 }
                 OutlinedButton(
                     onClick = { onTest(snapshot()) },
-                    enabled = canSave,
+                    enabled = canSave && !testing,
+                    shape = RoundedCornerShape(14.dp),
                     modifier = Modifier.weight(1f),
                 ) {
-                    Text("Test")
+                    Text(if (testing) "Testing..." else "Test")
                 }
             }
 
+            InfoNote(
+                "Test checks the connection without saving. Save and connect applies " +
+                    "these settings and closes this screen.",
+            )
+
+            when {
+                testing -> Row(
+                    horizontalArrangement = Arrangement.spacedBy(10.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    CircularProgressIndicator(
+                        modifier = Modifier.size(16.dp),
+                        strokeWidth = 2.dp,
+                    )
+                    Text(
+                        text = "Testing connection...",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+
+                statusError != null -> ResultNote(statusError, isError = true)
+                statusMessage != null -> ResultNote(statusMessage, isError = false)
+            }
+
             if (initial.certFingerprint.isNotBlank()) {
-                Spacer(Modifier.height(4.dp))
+                Spacer(Modifier.height(6.dp))
                 SectionTitle("Trusted certificate")
                 InfoNote(
                     "The app accepted this certificate from the server. If it ever changes " +
@@ -253,7 +414,7 @@ fun SettingsScreen(
                 )
             }
 
-            Spacer(Modifier.height(24.dp))
+            Spacer(Modifier.height(20.dp))
         }
     }
 }
@@ -261,10 +422,11 @@ fun SettingsScreen(
 @Composable
 private fun SectionTitle(text: String) {
     Text(
-        text = text,
-        style = MaterialTheme.typography.titleSmall,
-        fontWeight = FontWeight.SemiBold,
-        color = MaterialTheme.colorScheme.primary,
+        text = text.uppercase(),
+        style = MaterialTheme.typography.labelSmall,
+        fontWeight = FontWeight.Medium,
+        letterSpacing = 1.2.sp,
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
     )
 }
 
@@ -273,6 +435,30 @@ private fun InfoNote(text: String) {
     Text(
         text = text,
         style = MaterialTheme.typography.labelSmall,
-        color = MaterialTheme.colorScheme.onSurfaceVariant,
+        color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.85f),
     )
+}
+
+@Composable
+private fun ResultNote(text: String, isError: Boolean) {
+    Surface(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(12.dp),
+        color = if (isError) {
+            MaterialTheme.colorScheme.errorContainer
+        } else {
+            MaterialTheme.colorScheme.surfaceVariant
+        },
+        contentColor = if (isError) {
+            MaterialTheme.colorScheme.onErrorContainer
+        } else {
+            MaterialTheme.colorScheme.onSurface
+        },
+    ) {
+        Text(
+            text = text,
+            modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
+            style = MaterialTheme.typography.bodySmall,
+        )
+    }
 }

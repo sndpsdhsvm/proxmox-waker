@@ -3,14 +3,17 @@
     android:height="108dp"
     android:viewportWidth="108"
     android:viewportHeight="108">
-    <!-- Power symbol -->
+    <!-- Power glyph: centered bar, 290° ring with a clean 70° gap at the top. -->
     <path
-        android:fillColor="#E57000"
-        android:pathData="M54,30 L54,55 A3,3 0 0,0 60,55 L60,30 A3,3 0 0,0 54,30 Z" />
-    <path
-        android:strokeColor="#FFD8A8"
-        android:strokeWidth="5"
+        android:strokeColor="#E9E6EF"
+        android:strokeWidth="6"
         android:fillColor="#00000000"
         android:strokeLineCap="round"
-        android:pathData="M63,36 A21,21 0 1,1 45,36" />
+        android:pathData="M66.9,36.1 A22.5,22.5 0 1,1 41.1,36.1" />
+    <path
+        android:strokeColor="#D06FEE"
+        android:strokeWidth="6"
+        android:fillColor="#00000000"
+        android:strokeLineCap="round"
+        android:pathData="M54,28 L54,54.5" />
 </vector>

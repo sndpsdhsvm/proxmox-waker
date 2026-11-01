@@ -1,10 +1,14 @@
 package dev.sndp.proxmoxwaker
 
 import dev.sndp.proxmoxwaker.net.WakeOnLan
+import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
 import org.junit.Test
+import java.net.DatagramPacket
+import java.net.DatagramSocket
+import java.net.InetAddress
 
 class WakeOnLanTest {
 
@@ -70,5 +74,21 @@ class WakeOnLanTest {
     fun `formats mac back to canonical form`() {
         val mac = WakeOnLan.parseMac("aabbccddeeff")!!
         assertEquals("AA:BB:CC:DD:EE:FF", WakeOnLan.formatMac(mac))
+    }
+
+    @Test
+    fun `sends the magic packet over UDP`() = runBlocking {
+        val macString = "01:02:03:04:05:06"
+        val expected = WakeOnLan.magicPacket(WakeOnLan.parseMac(macString)!!)
+
+        DatagramSocket(0, InetAddress.getByName("127.0.0.1")).use { receiver ->
+            receiver.soTimeout = 2_000
+            WakeOnLan.send(macString, "127.0.0.1", receiver.localPort)
+
+            val buffer = ByteArray(expected.size)
+            val packet = DatagramPacket(buffer, buffer.size)
+            receiver.receive(packet)
+            assertArrayEquals(expected, buffer.copyOf(packet.length))
+        }
     }
 }

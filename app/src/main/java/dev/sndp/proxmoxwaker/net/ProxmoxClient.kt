@@ -3,6 +3,7 @@ package dev.sndp.proxmoxwaker.net
 import dev.sndp.proxmoxwaker.data.Guest
 import dev.sndp.proxmoxwaker.data.GuestStatus
 import dev.sndp.proxmoxwaker.data.GuestType
+import dev.sndp.proxmoxwaker.data.NodeStatus
 import dev.sndp.proxmoxwaker.data.ProxmoxConfig
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -78,6 +79,48 @@ class ProxmoxClient(
 
     private fun key(config: ProxmoxConfig) = "${config.baseUrl}|${config.username}"
 
+    /** Fetches node status with resource usage, uptime, and CPU info. */
+    suspend fun fetchNodeStatus(config: ProxmoxConfig): NodeStatus = withContext(Dispatchers.IO) {
+        val node = resolveNode(config)
+        val body = readCall(config, "${config.baseUrl}/nodes/$node/status")
+        val data = runCatching { parseData(body) }.getOrElse { throw it }
+
+        val uptime = data["uptime"]?.jsonPrimitive?.contentOrNull?.toLongOrNull() ?: 0L
+        val cpu = data["cpu"]?.jsonPrimitive?.contentOrNull?.toDoubleOrNull() ?: 0.0
+
+        val cpuInfo = data["cpuinfo"]?.jsonObject
+        val cpuCount = cpuInfo?.get("cpus")?.jsonPrimitive?.contentOrNull?.toIntOrNull()
+            ?: cpuInfo?.get("cores")?.jsonPrimitive?.contentOrNull?.toIntOrNull()
+            ?: data["cpus"]?.jsonPrimitive?.contentOrNull?.toIntOrNull()
+            ?: 0
+        val cpuModel = cpuInfo?.get("model")?.jsonPrimitive?.contentOrNull ?: ""
+
+        val memory = data["memory"]?.jsonObject
+        val memUsed = memory?.get("used")?.jsonPrimitive?.contentOrNull?.toLongOrNull() ?: 0L
+        val memTotal = memory?.get("total")?.jsonPrimitive?.contentOrNull?.toLongOrNull() ?: 0L
+
+        val swap = data["swap"]?.jsonObject
+        val swapUsed = swap?.get("used")?.jsonPrimitive?.contentOrNull?.toLongOrNull() ?: 0L
+        val swapTotal = swap?.get("total")?.jsonPrimitive?.contentOrNull?.toLongOrNull() ?: 0L
+
+        val rootfs = data["rootfs"]?.jsonObject
+        val rootUsed = rootfs?.get("used")?.jsonPrimitive?.contentOrNull?.toLongOrNull() ?: 0L
+        val rootTotal = rootfs?.get("total")?.jsonPrimitive?.contentOrNull?.toLongOrNull() ?: 0L
+
+        NodeStatus(
+            uptimeSeconds = uptime,
+            cpuUsage = cpu,
+            cpuCount = cpuCount,
+            cpuModel = cpuModel,
+            memoryUsed = memUsed,
+            memoryTotal = memTotal,
+            swapUsed = swapUsed,
+            swapTotal = swapTotal,
+            rootUsed = rootUsed,
+            rootTotal = rootTotal,
+        )
+    }
+
     /** Drops the cached session, e.g. after the password changes. */
     fun forgetSession() {
         synchronized(lock) {
@@ -148,6 +191,42 @@ class ProxmoxClient(
     suspend fun shutdownGuest(config: ProxmoxConfig, guest: Guest) = withContext(Dispatchers.IO) {
         val node = resolveNode(config)
         writeCall(config, "${config.baseUrl}/nodes/$node/${guest.type.apiPath}/${guest.vmid}/status/shutdown")
+        Unit
+    }
+
+    /** Reboots [guest] gracefully. */
+    suspend fun rebootGuest(config: ProxmoxConfig, guest: Guest) = withContext(Dispatchers.IO) {
+        val node = resolveNode(config)
+        writeCall(config, "${config.baseUrl}/nodes/$node/${guest.type.apiPath}/${guest.vmid}/status/reboot")
+        Unit
+    }
+
+    /** Resets [guest] forcefully. */
+    suspend fun resetGuest(config: ProxmoxConfig, guest: Guest) = withContext(Dispatchers.IO) {
+        val node = resolveNode(config)
+        writeCall(config, "${config.baseUrl}/nodes/$node/${guest.type.apiPath}/${guest.vmid}/status/reset")
+        Unit
+    }
+
+    /** Stops [guest] immediately (force stop). */
+    suspend fun stopGuest(config: ProxmoxConfig, guest: Guest) = withContext(Dispatchers.IO) {
+        val node = resolveNode(config)
+        writeCall(config, "${config.baseUrl}/nodes/$node/${guest.type.apiPath}/${guest.vmid}/status/stop")
+        Unit
+    }
+
+    /**
+     * Sends an ACPI shutdown request to the Proxmox node itself.
+     *
+     * `POST /nodes/{node}/status` takes `command=shutdown`. The call returns a task
+     * UPID; the node then powers off asynchronously, so callers should poll until the
+     * API stops answering rather than expecting the request to block. Requires
+     * `Sys.PowerMgmt` on the node.
+     */
+    suspend fun shutdownNode(config: ProxmoxConfig) = withContext(Dispatchers.IO) {
+        val node = resolveNode(config)
+        val form = FormBody.Builder().add("command", "shutdown").build()
+        writeCall(config, "${config.baseUrl}/nodes/$node/status", form)
         Unit
     }
 
@@ -243,11 +322,15 @@ class ProxmoxClient(
         return execute(request)
     }
 
-    private fun writeCall(config: ProxmoxConfig, url: String) {
+    private fun writeCall(
+        config: ProxmoxConfig,
+        url: String,
+        form: FormBody = FormBody.Builder().build(),
+    ) {
         val request = withSession(config) { session ->
             Request.Builder()
                 .url(url)
-                .post(FormBody.Builder().build())
+                .post(form)
                 .applyAuth(session, csrfRequired = true)
                 .build()
         }
@@ -382,7 +465,8 @@ class ProxmoxClient(
 
     private fun describeApiError(code: Int, body: String, statusHeader: String?): String = when (code) {
         401 -> "Session expired. Try again."
-        403 -> "Permission denied. The account needs VM.Audit and VM.PowerMgmt on this guest."
+        403 -> "Permission denied. Guest power actions need VM.Audit and VM.PowerMgmt; " +
+            "shutting down the node needs Sys.PowerMgmt."
         404 -> "Not found. Check the node name, and that the guest still exists."
         500 -> "Proxmox reported a server error: ${extractError(body)}"
         595 -> "Proxmox reported a task error: ${extractError(body)}"

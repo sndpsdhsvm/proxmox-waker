@@ -5,6 +5,7 @@ import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import dev.sndp.proxmoxwaker.data.Guest
 import dev.sndp.proxmoxwaker.data.GuestStatus
+import dev.sndp.proxmoxwaker.data.NodeStatus
 import dev.sndp.proxmoxwaker.data.ProxmoxConfig
 import dev.sndp.proxmoxwaker.data.SettingsRepository
 import dev.sndp.proxmoxwaker.net.NetworkUtils
@@ -12,16 +13,28 @@ import dev.sndp.proxmoxwaker.net.ProxmoxClient
 import dev.sndp.proxmoxwaker.net.ProxmoxException
 import dev.sndp.proxmoxwaker.net.TlsSupport
 import dev.sndp.proxmoxwaker.net.WakeOnLan
+import dev.sndp.proxmoxwaker.security.BiometricAuth
+import java.io.IOException
+import java.net.ConnectException
+import java.net.UnknownHostException
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 
 /** What the main screen is doing right now, used to drive the status banner. */
-enum class Phase { IDLE, WAKING, WAITING_FOR_SERVER, LOADING_GUESTS, STARTING }
+enum class Phase {
+    IDLE,
+    WAKING,
+    WAITING_FOR_SERVER,
+    LOADING_GUESTS,
+    STARTING,
+    SHUTTING_DOWN,
+}
 
 data class UiState(
     val config: ProxmoxConfig = ProxmoxConfig(),
@@ -29,10 +42,27 @@ data class UiState(
     val phase: Phase = Phase.IDLE,
     val serverReachable: Boolean = false,
     val guests: List<Guest> = emptyList(),
+    val nodeStatus: NodeStatus? = null,
     val message: String? = null,
     val error: String? = null,
     val startingGuestId: String? = null,
     val showSettings: Boolean = false,
+    /** True only for a user-initiated pull-to-refresh, not the silent auto-poll. */
+    val refreshing: Boolean = false,
+    /** Fingerprint unlock is enabled in settings. */
+    val requireBiometric: Boolean = false,
+    /** Fingerprint unlock can be used on this device right now. */
+    val biometricAvailable: Boolean = false,
+    /** Why fingerprint unlock is unavailable, when it is. */
+    val biometricMessage: String? = null,
+    /** False until the saved security preference has been read from disk. */
+    val securityReady: Boolean = false,
+    /** True while the lock screen covers the controls. */
+    val locked: Boolean = false,
+    /** Incremented when a fresh fingerprint prompt should be shown. */
+    val lockRequestId: Int = 0,
+    /** Feedback shown on the lock screen after a failed attempt. */
+    val lockMessage: String? = null,
 ) {
     val busy: Boolean get() = phase != Phase.IDLE
 }
@@ -59,13 +89,32 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
 
     init {
         viewModelScope.launch {
-            settings.config.collect { config ->
-                val configured = config.canTalkToApi
-                _state.update {
-                    it.copy(
+            combine(settings.config, settings.requireBiometric) { config, require ->
+                config to require
+            }.collect { (config, requireBiometric) ->
+                val status = BiometricAuth.status(getApplication())
+                _state.update { current ->
+                    // Lock only on the first read, which is a fresh app start (or a
+                    // restart after the app was killed). Returning from the background
+                    // does not re-lock. Never lock when the sensor cannot be used,
+                    // otherwise removing a fingerprint would lock the app for good.
+                    val canLock = requireBiometric && status.canUse
+                    val freshLock = canLock && !current.securityReady
+                    current.copy(
                         config = config,
-                        configured = configured,
-                        showSettings = if (!configured) true else it.showSettings,
+                        configured = config.canTalkToApi,
+                        showSettings = if (!config.canTalkToApi) true else current.showSettings,
+                        requireBiometric = requireBiometric,
+                        biometricAvailable = status.canUse,
+                        biometricMessage = status.message,
+                        securityReady = true,
+                        locked = when {
+                            !canLock -> false
+                            freshLock -> true
+                            else -> current.locked
+                        },
+                        lockRequestId = if (freshLock) current.lockRequestId + 1 else current.lockRequestId,
+                        lockMessage = if (!canLock) null else current.lockMessage,
                     )
                 }
             }
@@ -74,12 +123,67 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
 
     // ------------------------------------------------------------- user actions
 
-    fun openSettings() = _state.update { it.copy(showSettings = true, error = null) }
+    /** Re-checks the sensor when the app comes back, e.g. after enrolling a finger. */
+    fun refreshBiometricStatus() {
+        val status = BiometricAuth.status(getApplication())
+        _state.update { current ->
+            if (current.requireBiometric && !status.canUse && current.locked) {
+                current.copy(
+                    locked = false,
+                    biometricAvailable = false,
+                    biometricMessage = status.message,
+                    message = status.message ?: current.message,
+                )
+            } else {
+                current.copy(
+                    biometricAvailable = status.canUse,
+                    biometricMessage = status.message,
+                )
+            }
+        }
+    }
+
+    fun setRequireBiometric(enabled: Boolean) {
+        if (enabled) {
+            val status = BiometricAuth.status(getApplication())
+            if (!status.canUse) {
+                _state.update {
+                    it.copy(
+                        error = status.message ?: "Fingerprint unlock is not available.",
+                        showSettings = true,
+                    )
+                }
+                return
+            }
+        }
+        viewModelScope.launch {
+            settings.setRequireBiometric(enabled)
+            if (!enabled) {
+                _state.update { it.copy(locked = false, lockMessage = null) }
+            }
+        }
+    }
+
+    fun onUnlocked() = _state.update {
+        it.copy(locked = false, lockMessage = null)
+    }
+
+    fun onUnlockFailed() = _state.update {
+        it.copy(lockMessage = "Fingerprint not recognized. Try again.")
+    }
+
+    fun onUnlockError(message: String) = _state.update {
+        it.copy(lockMessage = message)
+    }
+
+    fun openSettings() = _state.update {
+        it.copy(showSettings = true, error = null, message = null)
+    }
 
     fun closeSettings() = _state.update {
-        // Only allow closing the sheet once there is a usable config.
-        if (it.config.canTalkToApi) it.copy(showSettings = false, error = null)
-        else it.copy(error = "Fill in the host and login details first.")
+        // Always allow leaving Settings: the main screen already explains that
+        // nothing is configured and offers the gear to come back.
+        it.copy(showSettings = false, error = null)
     }
 
     fun dismissError() = _state.update { it.copy(error = null) }
@@ -130,29 +234,33 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
-    /** Loads (or reloads) the guest list from the API. */
+    /** Loads (or reloads) the guest list from the API. Used by pull-to-refresh. */
     fun refresh() {
         val config = _state.value.config
         if (!config.canTalkToApi) {
             _state.update { it.copy(error = "Add your Proxmox host and login in Settings first.") }
             return
         }
+        if (_state.value.busy || _state.value.refreshing) return
+
         viewModelScope.launch {
-            _state.update { it.copy(phase = Phase.LOADING_GUESTS, error = null) }
+            _state.update { it.copy(refreshing = true, error = null) }
             try {
                 val guests = client.listGuests(config)
+                val nodeStatus = runCatching { client.fetchNodeStatus(config) }.getOrNull()
                 _state.update {
                     it.copy(
-                        phase = Phase.IDLE,
+                        refreshing = false,
                         guests = guests,
                         serverReachable = true,
+                        nodeStatus = nodeStatus,
                         message = null,
                     )
                 }
             } catch (e: Exception) {
                 _state.update {
                     it.copy(
-                        phase = Phase.IDLE,
+                        refreshing = false,
                         serverReachable = false,
                         error = e.userMessage(),
                     )
@@ -199,7 +307,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                     it.copy(
                         phase = Phase.IDLE,
                         startingGuestId = null,
-                        message = "Shutdown command sent for ${guest.name}.",
+                        message = "Graceful shutdown sent for ${guest.name}.",
                     )
                 }
                 delay(3_000)
@@ -209,6 +317,122 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                     it.copy(phase = Phase.IDLE, startingGuestId = null, error = e.userMessage())
                 }
             }
+        }
+    }
+
+    fun rebootGuest(guest: Guest) {
+        val config = _state.value.config
+        viewModelScope.launch {
+            _state.update {
+                it.copy(phase = Phase.STARTING, startingGuestId = guest.id, error = null)
+            }
+            try {
+                client.rebootGuest(config, guest)
+                _state.update {
+                    it.copy(
+                        phase = Phase.IDLE,
+                        startingGuestId = null,
+                        message = "Reboot command sent for ${guest.name}.",
+                    )
+                }
+                delay(3_000)
+                refresh()
+            } catch (e: Exception) {
+                _state.update {
+                    it.copy(phase = Phase.IDLE, startingGuestId = null, error = e.userMessage())
+                }
+            }
+        }
+    }
+
+    fun resetGuest(guest: Guest) {
+        val config = _state.value.config
+        viewModelScope.launch {
+            _state.update {
+                it.copy(phase = Phase.STARTING, startingGuestId = guest.id, error = null)
+            }
+            try {
+                client.resetGuest(config, guest)
+                _state.update {
+                    it.copy(
+                        phase = Phase.IDLE,
+                        startingGuestId = null,
+                        message = "Hard reset sent for ${guest.name}.",
+                    )
+                }
+                delay(3_000)
+                refresh()
+            } catch (e: Exception) {
+                _state.update {
+                    it.copy(phase = Phase.IDLE, startingGuestId = null, error = e.userMessage())
+                }
+            }
+        }
+    }
+
+    fun stopGuest(guest: Guest) {
+        val config = _state.value.config
+        viewModelScope.launch {
+            _state.update {
+                it.copy(phase = Phase.STARTING, startingGuestId = guest.id, error = null)
+            }
+            try {
+                client.stopGuest(config, guest)
+                _state.update {
+                    it.copy(
+                        phase = Phase.IDLE,
+                        startingGuestId = null,
+                        message = "Force stop sent for ${guest.name}.",
+                    )
+                }
+                delay(3_000)
+                refresh()
+            } catch (e: Exception) {
+                _state.update {
+                    it.copy(phase = Phase.IDLE, startingGuestId = null, error = e.userMessage())
+                }
+            }
+        }
+    }
+
+    /**
+     * Shuts down the Proxmox node itself, then watches the API until it stops
+     * answering so the UI flips to "offline" without waiting for a manual refresh.
+     */
+    fun shutdownNode() {
+        val config = _state.value.config
+        if (!config.canTalkToApi) {
+            _state.update { it.copy(error = "Add your Proxmox host and login in Settings first.") }
+            return
+        }
+        if (_state.value.busy) return
+
+        viewModelScope.launch {
+            _state.update {
+                it.copy(
+                    phase = Phase.SHUTTING_DOWN,
+                    startingGuestId = null,
+                    error = null,
+                    message = null,
+                )
+            }
+
+            val failure = runCatching { client.shutdownNode(config) }.exceptionOrNull()
+            if (failure != null && (!failure.isNetworkFailure() || failure.isDefinitelyNotSent())) {
+                _state.update {
+                    it.copy(phase = Phase.IDLE, error = failure.userMessage())
+                }
+                return@launch
+            }
+
+            // A dropped connection right after sending is expected while the node
+            // powers off, so treat it as a successful request and keep watching.
+            _state.update {
+                it.copy(
+                    message = "Shutdown command sent. Waiting for ${config.host} to power off...",
+                )
+            }
+            waitForNodeOffline(config)
         }
     }
 
@@ -230,12 +454,18 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                 } else {
                     emptyList()
                 }
+                val nodeStatus = if (loadGuestsOnSuccess) {
+                    runCatching { client.fetchNodeStatus(config) }.getOrNull()
+                } else {
+                    null
+                }
 
                 _state.update {
                     it.copy(
                         phase = Phase.IDLE,
                         serverReachable = true,
                         guests = if (loadGuestsOnSuccess) guests else it.guests,
+                        nodeStatus = nodeStatus,
                         message = "Connected to $summary.",
                     )
                 }
@@ -260,11 +490,13 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         while (System.currentTimeMillis() < deadline) {
             try {
                 val guests = client.listGuests(config)
+                val nodeStatus = runCatching { client.fetchNodeStatus(config) }.getOrNull()
                 _state.update {
                     it.copy(
                         phase = Phase.IDLE,
                         guests = guests,
                         serverReachable = true,
+                        nodeStatus = nodeStatus,
                         message = "Server is up. ${guests.count { g -> g.status == GuestStatus.RUNNING }} " +
                             "guest(s) running.",
                     )
@@ -285,22 +517,61 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
+    /**
+     * Waits for the node to stop answering after a shutdown request. Proxmox may
+     * keep serving the API for a little while, so a single failed call is not
+     * enough: we poll until the failure is a real network error.
+     */
+    private suspend fun waitForNodeOffline(
+        config: ProxmoxConfig,
+        timeoutMillis: Long = 4 * 60 * 1000,
+    ) {
+        val deadline = System.currentTimeMillis() + timeoutMillis
+
+        while (System.currentTimeMillis() < deadline) {
+            try {
+                // Still answering. Give the shutdown task time to progress.
+                client.listGuests(config)
+                delay(3_000)
+            } catch (e: Exception) {
+                if (!e.isNetworkFailure()) {
+                    _state.update { it.copy(phase = Phase.IDLE, error = e.userMessage()) }
+                    return
+                }
+                _state.update {
+                    it.copy(
+                        phase = Phase.IDLE,
+                        serverReachable = false,
+                        guests = emptyList(),
+                        error = null,
+                        message = NODE_OFF_MESSAGE,
+                    )
+                }
+                return
+            }
+        }
+
+        _state.update {
+            it.copy(
+                phase = Phase.IDLE,
+                message = "Shutdown requested, but ${config.host} is still answering. " +
+                    "Pull down to refresh.",
+            )
+        }
+    }
+
     /** Starts a periodic refresh so the guest list stays current while visible. */
-    fun startPolling(intervalMillis: Long = 15_000) {
+    fun startPolling(intervalMillis: Long = 10_000) {
         if (pollJob?.isActive == true) return
         pollJob = viewModelScope.launch {
+            // Config is read from disk asynchronously. Wait for it before the first
+            // poll so returning to the app does not sit on a stale "offline" state.
+            while (!_state.value.configured) delay(100)
+            if (_state.value.phase == Phase.IDLE) pollOnce()
             while (true) {
                 delay(intervalMillis)
                 if (_state.value.phase == Phase.IDLE && _state.value.configured) {
-                    runCatching { client.listGuests(_state.value.config) }
-                        .onSuccess { guests ->
-                            _state.update {
-                                it.copy(guests = guests, serverReachable = true)
-                            }
-                        }
-                        .onFailure {
-                            _state.update { s -> s.copy(serverReachable = false) }
-                        }
+                    pollOnce()
                 }
             }
         }
@@ -311,15 +582,62 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         pollJob = null
     }
 
+    private suspend fun pollOnce() {
+        if (!_state.value.configured) return
+        val config = _state.value.config
+        runCatching { client.listGuests(config) }
+            .onSuccess { guests ->
+                val nodeStatus = runCatching { client.fetchNodeStatus(config) }.getOrNull()
+                _state.update {
+                    it.copy(
+                        guests = guests,
+                        serverReachable = true,
+                        nodeStatus = nodeStatus,
+                        message = it.message.takeUnless { message -> message == NODE_OFF_MESSAGE },
+                    )
+                }
+            }
+            .onFailure {
+                _state.update { it.copy(serverReachable = false, nodeStatus = null, guests = emptyList()) }
+            }
+    }
+
     override fun onCleared() {
         stopPolling()
         super.onCleared()
     }
 
-    private fun Exception.userMessage(): String =
+    private fun Throwable.userMessage(): String =
         if (this is ProxmoxException) message ?: "Unknown error"
         else message?.takeIf { it.isNotBlank() } ?: "Unknown error"
 
+    /** True when this failure came from the network layer, not an HTTP/API error. */
+    private fun Throwable.isNetworkFailure(): Boolean {
+        var cause: Throwable? = this
+        while (cause != null) {
+            if (cause is IOException) return true
+            cause = cause.cause
+        }
+        return false
+    }
+
+    /**
+     * True when the network failure happened before the request could leave the
+     * device. These are not evidence that the node accepted a shutdown command.
+     */
+    private fun Throwable.isDefinitelyNotSent(): Boolean {
+        var cause: Throwable? = this
+        while (cause != null) {
+            if (cause is ConnectException || cause is UnknownHostException) return true
+            cause = cause.cause
+        }
+        return false
+    }
+
     /** Exposed for the settings screen so it can warn about being offline. */
     fun localNetworkAvailable(): Boolean = NetworkUtils.hasLocalNetwork()
+
+    private companion object {
+        const val NODE_OFF_MESSAGE = "Node is off. Wake it when you're ready."
+    }
 }

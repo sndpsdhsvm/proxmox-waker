@@ -53,6 +53,37 @@ data class Guest(
     val id: String get() = "${type.apiPath}/$vmid"
 }
 
+/** Node resource usage and system information. */
+data class NodeStatus(
+    val uptimeSeconds: Long = 0,
+    val cpuUsage: Double = 0.0,
+    val cpuCount: Int = 0,
+    val cpuModel: String = "",
+    val memoryUsed: Long = 0,
+    val memoryTotal: Long = 0,
+    val swapUsed: Long = 0,
+    val swapTotal: Long = 0,
+    val rootUsed: Long = 0,
+    val rootTotal: Long = 0,
+) {
+    val cpuPercent: Int get() = (cpuUsage * 100).toInt().coerceIn(0, 100)
+    val memoryPercent: Int get() = if (memoryTotal > 0) ((memoryUsed.toDouble() / memoryTotal.toDouble()) * 100).toInt().coerceIn(0, 100) else 0
+    val swapPercent: Int get() = if (swapTotal > 0) ((swapUsed.toDouble() / swapTotal.toDouble()) * 100).toInt().coerceIn(0, 100) else 0
+    val diskPercent: Int get() = if (rootTotal > 0) ((rootUsed.toDouble() / rootTotal.toDouble()) * 100).toInt().coerceIn(0, 100) else 0
+
+    fun uptimeText(): String {
+        if (uptimeSeconds <= 0) return ""
+        val days = uptimeSeconds / 86400
+        val hours = (uptimeSeconds % 86400) / 3600
+        val mins = (uptimeSeconds % 3600) / 60
+        return buildString {
+            if (days > 0) append("${days}d ")
+            if (hours > 0 || days > 0) append("${hours}h ")
+            append("${mins}m")
+        }.trim()
+    }
+}
+
 enum class GuestType(val apiPath: String, val label: String) {
     QEMU("qemu", "VM"),
     LXC("lxc", "CT");

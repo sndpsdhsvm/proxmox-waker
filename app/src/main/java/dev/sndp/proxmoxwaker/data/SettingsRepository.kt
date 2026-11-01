@@ -3,6 +3,7 @@ package dev.sndp.proxmoxwaker.data
 import android.content.Context
 import androidx.datastore.core.DataStore
 import androidx.datastore.preferences.core.Preferences
+import androidx.datastore.preferences.core.booleanPreferencesKey
 import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.intPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
@@ -34,6 +35,17 @@ class SettingsRepository(private val context: Context) {
         val wolPort = intPreferencesKey("wol_port")
         val wolBroadcast = stringPreferencesKey("wol_broadcast")
         val certFingerprint = stringPreferencesKey("cert_fingerprint")
+        val requireBiometric = booleanPreferencesKey("require_biometric")
+    }
+
+    /**
+     * Whether the app asks for the device's fingerprint before showing the
+     * controls. On by default because this app can power a whole server; if the
+     * device has no usable sensor the lock is skipped rather than trapping the
+     * user outside their own app.
+     */
+    val requireBiometric: Flow<Boolean> = context.dataStore.data.map { prefs ->
+        prefs[Keys.requireBiometric] ?: true
     }
 
     val config: Flow<ProxmoxConfig> = context.dataStore.data.map { prefs ->
@@ -77,5 +89,10 @@ class SettingsRepository(private val context: Context) {
     suspend fun updateFingerprint(fingerprint: String) {
         if (fingerprint.isBlank()) return
         context.dataStore.edit { it[Keys.certFingerprint] = fingerprint }
+    }
+
+    /** Turns the fingerprint unlock requirement on or off. */
+    suspend fun setRequireBiometric(enabled: Boolean) {
+        context.dataStore.edit { it[Keys.requireBiometric] = enabled }
     }
 }
