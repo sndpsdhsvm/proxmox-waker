@@ -1,5 +1,9 @@
 # Proxmox Waker
 
+[![CI](https://github.com/sndpsdhsvm/proxmox-waker/actions/workflows/ci.yml/badge.svg)](https://github.com/sndpsdhsvm/proxmox-waker/actions/workflows/ci.yml)
+[![Latest release](https://img.shields.io/github/v/release/sndpsdhsvm/proxmox-waker)](https://github.com/sndpsdhsvm/proxmox-waker/releases/latest)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+
 > **Unofficial project.** Not affiliated with, endorsed by, or supported by
 > Proxmox Server Solutions GmbH. "Proxmox" is a trademark of Proxmox Server
 > Solutions GmbH. See [License](#license).
