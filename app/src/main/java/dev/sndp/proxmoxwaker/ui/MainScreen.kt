@@ -702,7 +702,8 @@ private fun NodePanel(
         Phase.IDLE -> when {
             !state.configured -> "Not configured"
             online -> "Online"
-            else -> "Asleep"
+            !state.networkAvailable -> "No connection"
+            else -> "Offline"
         }
     }
 
@@ -722,7 +723,8 @@ private fun NodePanel(
         shuttingDown -> "Watching the API until it goes quiet."
         waking -> "Hold tight — the node is booting."
         online -> "${state.config.host} · $animatedTotal machines, $animatedRunning running"
-        state.config.host.isNotBlank() -> "${state.config.host} is asleep. Send it a magic packet."
+        !state.networkAvailable -> "Connect to Wi-Fi or Ethernet to reach ${state.config.host}."
+        state.config.host.isNotBlank() -> "${state.config.host} isn't answering. Send it a magic packet."
         else -> "Add your node in settings."
     }
 
@@ -848,7 +850,8 @@ private fun NodePanel(
             Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                 Button(
                     onClick = onWake,
-                    enabled = state.configured && state.config.canWake && !online && !state.busy,
+                    enabled = state.configured && state.config.canWake && !online && !state.busy &&
+                        state.networkAvailable,
                     modifier = Modifier.weight(1f),
                     shape = RoundedCornerShape(14.dp),
                 ) {
@@ -974,6 +977,7 @@ private fun SyncFooter(state: UiState) {
     val label = when {
         !state.configured -> "NOT CONNECTED"
         state.refreshing -> "SYNCING…"
+        !state.networkAvailable -> "NO CONNECTION"
         !state.serverReachable && state.guests.isNotEmpty() -> "RECONNECTING…"
         !state.serverReachable -> "OFFLINE · RETRYING"
         else -> "LIVE"
@@ -1094,6 +1098,7 @@ private fun EmptyState(state: UiState) {
                 text = when {
                     !state.configured -> "No node configured"
                     state.refreshing -> "Reading machines"
+                    !state.networkAvailable -> "No network connection"
                     !state.serverReachable -> "The node is offline"
                     else -> "No machines found"
                 },
@@ -1105,6 +1110,7 @@ private fun EmptyState(state: UiState) {
                 text = when {
                     !state.configured -> "Open settings and add your Proxmox host to get started."
                     state.refreshing -> "This only takes a moment."
+                    !state.networkAvailable -> "Connect to Wi-Fi or Ethernet and the list will return."
                     !state.serverReachable -> "Wake the server and it will connect automatically."
                     else -> "Start a VM or container in Proxmox and it will appear here."
                 },

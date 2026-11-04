@@ -1,6 +1,9 @@
 package dev.sndp.proxmoxwaker.ui
 
 import android.app.Application
+import android.net.ConnectivityManager
+import android.net.Network
+import android.net.NetworkCapabilities
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import dev.sndp.proxmoxwaker.data.Guest
@@ -25,6 +28,8 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 
 /** What the main screen is doing right now, used to drive the status banner. */
 enum class Phase {
@@ -41,6 +46,8 @@ data class UiState(
     val configured: Boolean = false,
     val phase: Phase = Phase.IDLE,
     val serverReachable: Boolean = false,
+    /** True when the phone has a Wi-Fi, Ethernet, or VPN network. */
+    val networkAvailable: Boolean = true,
     val guests: List<Guest> = emptyList(),
     val nodeStatus: NodeStatus? = null,
     val message: String? = null,
@@ -90,7 +97,74 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     /** Consecutive failed reads, so one dropped packet does not blank the screen. */
     private var readFailures = 0
 
+    private val connectivity =
+        getApplication<Application>().getSystemService(ConnectivityManager::class.java)
+
+    /** Serialises reads so the poll loop and the network callback never overlap. */
+    private val readLock = Mutex()
+
+    /**
+     * Wi-Fi dropping is known to the OS immediately, but a connect attempt to a
+     * LAN address can take seconds to time out. Clear the list the moment the
+     * default network goes away, and read again as soon as one appears.
+     */
+    private val networkCallback = object : ConnectivityManager.NetworkCallback() {
+        override fun onLost(network: Network) {
+            refreshNetworkAvailability()
+            markOffline()
+        }
+
+        override fun onAvailable(network: Network) {
+            // A handover (Wi-Fi -> mobile) can deliver onAvailable without a
+            // matching onLost, so clear here too. A reachable node refills the
+            // list on the read below.
+            refreshNetworkAvailability()
+            markOffline()
+            viewModelScope.launch {
+                if (_state.value.configured && _state.value.phase == Phase.IDLE) {
+                    refreshQuietly()
+                }
+            }
+        }
+
+        override fun onCapabilitiesChanged(network: Network, caps: NetworkCapabilities) {
+            refreshNetworkAvailability()
+        }
+
+        override fun onUnavailable() {
+            refreshNetworkAvailability()
+            markOffline()
+        }
+    }
+
+    /**
+     * The Proxmox API is a LAN address, so cellular alone is not enough to
+     * reach it. A VPN counts, since that can carry the LAN.
+     */
+    private fun refreshNetworkAvailability() {
+        val caps = connectivity.getNetworkCapabilities(connectivity.activeNetwork)
+        val available = caps != null && (
+            caps.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) ||
+                caps.hasTransport(NetworkCapabilities.TRANSPORT_ETHERNET) ||
+                caps.hasTransport(NetworkCapabilities.TRANSPORT_VPN)
+            )
+        _state.update { it.copy(networkAvailable = available) }
+    }
+
+    private fun markOffline() {
+        readFailures = 0
+        _state.update {
+            if (it.guests.isEmpty() && it.nodeStatus == null && !it.serverReachable) {
+                it
+            } else {
+                it.copy(serverReachable = false, guests = emptyList(), nodeStatus = null)
+            }
+        }
+    }
+
     init {
+        runCatching { connectivity.registerDefaultNetworkCallback(networkCallback) }
+        refreshNetworkAvailability()
         viewModelScope.launch {
             combine(settings.config, settings.requireBiometric) { config, require ->
                 config to require
@@ -601,36 +675,39 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     private suspend fun refreshQuietly() {
-        if (!_state.value.configured) return
-        val config = _state.value.config
-        runCatching { client.listGuests(config) }
-            .onSuccess { guests ->
-                val nodeStatus = runCatching { client.fetchNodeStatus(config) }.getOrNull()
-                readFailures = 0
-                _state.update {
-                    it.copy(
-                        guests = guests,
-                        serverReachable = true,
-                        nodeStatus = nodeStatus,
-                        message = it.message.takeUnless { message -> message == NODE_OFF_MESSAGE },
-                    )
-                }
-            }
-            .onFailure {
-                readFailures++
-                // Drop the list once the node is really gone. Waiting for a second
-                // failure keeps a single dropped packet from clearing the screen.
-                if (readFailures >= 2) {
+        readLock.withLock {
+            if (!_state.value.configured) return@withLock
+            val config = _state.value.config
+            runCatching { client.listGuests(config) }
+                .onSuccess { guests ->
+                    val nodeStatus = runCatching { client.fetchNodeStatus(config) }.getOrNull()
+                    readFailures = 0
                     _state.update {
-                        it.copy(serverReachable = false, guests = emptyList(), nodeStatus = null)
+                        it.copy(
+                            guests = guests,
+                            serverReachable = true,
+                            nodeStatus = nodeStatus,
+                            message = it.message.takeUnless { message -> message == NODE_OFF_MESSAGE },
+                        )
                     }
-                } else {
-                    _state.update { it.copy(serverReachable = false) }
                 }
-            }
+                .onFailure {
+                    readFailures++
+                    // Drop the list once the node is really gone. Waiting for a second
+                    // failure keeps a single dropped packet from clearing the screen.
+                    if (readFailures >= 2) {
+                        _state.update {
+                            it.copy(serverReachable = false, guests = emptyList(), nodeStatus = null)
+                        }
+                    } else {
+                        _state.update { it.copy(serverReachable = false) }
+                    }
+                }
+        }
     }
 
     override fun onCleared() {
+        runCatching { connectivity.unregisterNetworkCallback(networkCallback) }
         onScreenHidden()
         super.onCleared()
     }
