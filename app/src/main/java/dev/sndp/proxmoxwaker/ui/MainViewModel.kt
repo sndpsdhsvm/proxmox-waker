@@ -87,6 +87,9 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
 
     private var refreshJob: Job? = null
 
+    /** Consecutive failed reads, so one dropped packet does not blank the screen. */
+    private var readFailures = 0
+
     init {
         viewModelScope.launch {
             combine(settings.config, settings.requireBiometric) { config, require ->
@@ -252,6 +255,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             try {
                 val guests = client.listGuests(config)
                 val nodeStatus = runCatching { client.fetchNodeStatus(config) }.getOrNull()
+                readFailures = 0
                 _state.update {
                     it.copy(
                         refreshing = false,
@@ -262,10 +266,13 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                     )
                 }
             } catch (e: Exception) {
+                readFailures = 0
                 _state.update {
                     it.copy(
                         refreshing = false,
                         serverReachable = false,
+                        guests = emptyList(),
+                        nodeStatus = null,
                         error = e.userMessage(),
                     )
                 }
@@ -599,6 +606,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         runCatching { client.listGuests(config) }
             .onSuccess { guests ->
                 val nodeStatus = runCatching { client.fetchNodeStatus(config) }.getOrNull()
+                readFailures = 0
                 _state.update {
                     it.copy(
                         guests = guests,
@@ -609,7 +617,16 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                 }
             }
             .onFailure {
-                _state.update { it.copy(serverReachable = false) }
+                readFailures++
+                // Drop the list once the node is really gone. Waiting for a second
+                // failure keeps a single dropped packet from clearing the screen.
+                if (readFailures >= 2) {
+                    _state.update {
+                        it.copy(serverReachable = false, guests = emptyList(), nodeStatus = null)
+                    }
+                } else {
+                    _state.update { it.copy(serverReachable = false) }
+                }
             }
     }
 

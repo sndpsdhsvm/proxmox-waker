@@ -27,8 +27,9 @@ All notable changes to this project are documented here.
   while the API call is in flight. The guest list also remembers its scroll
   position.
 - Background refresh is silent: the list re-reads every 3 seconds in place,
-  with no spinner, layout jump, or countdown label, and recovers on its own when
-  a read fails.
+  with no spinner, layout jump, or countdown label. A failed read keeps the
+  list briefly, then clears it once the node is confirmed unreachable, and
+  repopulates on its own when the network returns.
 
 ## 1.0.0 - 2026-11-01
 
