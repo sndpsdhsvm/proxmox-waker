@@ -25,7 +25,7 @@ All notable changes to this project are documented here.
 - Pull-to-refresh has a custom animated puck: it fills as you drag, gives a
   haptic tick at the trigger point, then spins with the theme accent gradient
   while the API call is in flight. The guest list also remembers its scroll
-  position.
+  position. Pull is disabled when the phone has no network.
 - Background refresh is silent: the list re-reads every 3 seconds in place,
   with no spinner, layout jump, or countdown label. A failed read keeps the
   list briefly, then clears it once the node is confirmed unreachable, and

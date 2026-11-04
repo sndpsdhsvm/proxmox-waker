@@ -4,7 +4,6 @@ import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.animateColorAsState
-import androidx.compose.animation.core.LinearEasing
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.animateIntAsState
 import androidx.compose.animation.core.tween
@@ -46,7 +45,6 @@ import androidx.compose.material.icons.outlined.Info
 import androidx.compose.material.icons.outlined.MoreVert
 import androidx.compose.material.icons.outlined.PlayArrow
 import androidx.compose.material.icons.outlined.PowerSettingsNew
-import androidx.compose.material.icons.outlined.Refresh
 import androidx.compose.material.icons.outlined.Settings
 import androidx.compose.material.icons.outlined.StopCircle
 import androidx.compose.material3.AlertDialog
@@ -80,7 +78,6 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
@@ -195,33 +192,6 @@ fun MainScreen(vm: MainViewModel) {
                         }
                     },
                     actions = {
-                        val refreshRotation by animateFloatAsState(
-                            targetValue = if (state.refreshing) 360f else 0f,
-                            animationSpec = tween(durationMillis = 850, easing = LinearEasing),
-                            label = "refreshAction",
-                        )
-                        IconButton(
-                            onClick = {
-                                tick()
-                                vm.refresh()
-                            },
-                            enabled = state.configured && !state.refreshing && !state.busy,
-                        ) {
-                            Icon(
-                                imageVector = Icons.Outlined.Refresh,
-                                contentDescription = "Refresh",
-                                modifier = Modifier
-                                    .size(20.dp)
-                                    .graphicsLayer {
-                                        rotationZ = if (state.refreshing) refreshRotation else 0f
-                                    },
-                                tint = if (state.refreshing) {
-                                    MaterialTheme.colorScheme.primary
-                                } else {
-                                    MaterialTheme.colorScheme.onSurfaceVariant
-                                },
-                            )
-                        }
                         IconButton(onClick = vm::openSettings) {
                             Icon(Icons.Outlined.Settings, contentDescription = "Settings")
                         }
@@ -238,7 +208,7 @@ fun MainScreen(vm: MainViewModel) {
                     .pullToRefresh(
                         isRefreshing = state.refreshing,
                         state = pullState,
-                        enabled = state.configured,
+                        enabled = state.configured && state.networkAvailable,
                         onRefresh = vm::refresh,
                     ),
                 contentAlignment = Alignment.TopStart,

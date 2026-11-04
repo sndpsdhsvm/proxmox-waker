@@ -54,8 +54,10 @@ layout jump, no label counting down — the rows just settle onto their new valu
 and a small footer shows whether the app is live, reconnecting, or offline. Nothing
 is cached to disk.
 Pull down anywhere on the list for a manual refresh — including while the node is
-offline. The refresh puck fills as you drag, ticks the haptic at the trigger point,
-and spins with the theme accent gradient while the API call is in flight. A
+offline, as long as the phone has Wi-Fi, Ethernet, or a VPN. The gesture is
+disabled when there is no network at all. The refresh puck fills as you drag,
+ticks the haptic at the trigger point, and spins with the theme accent gradient
+while the API call is in flight. A
 successful wake ends with a small confetti burst. Motion carries the interface: the node card,
 machine list, and footer assemble with a soft stagger, counters and resource bars
 ease to their new values, and each row's Start/Stop control crossfades in place.
