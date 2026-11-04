@@ -43,11 +43,13 @@ data class UiState(
     val serverReachable: Boolean = false,
     val guests: List<Guest> = emptyList(),
     val nodeStatus: NodeStatus? = null,
+    /** When the list last came back from the API, used by the sync footer. */
+    val lastUpdatedAt: Long = 0L,
     val message: String? = null,
     val error: String? = null,
     val startingGuestId: String? = null,
     val showSettings: Boolean = false,
-    /** True only for a user-initiated pull-to-refresh, not the silent auto-poll. */
+    /** True only for a user-initiated refresh. */
     val refreshing: Boolean = false,
     /** Fingerprint unlock is enabled in settings. */
     val requireBiometric: Boolean = false,
@@ -85,7 +87,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     private val _state = MutableStateFlow(UiState())
     val state: StateFlow<UiState> = _state.asStateFlow()
 
-    private var pollJob: Job? = null
+    private var refreshJob: Job? = null
 
     init {
         viewModelScope.launch {
@@ -93,6 +95,8 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                 config to require
             }.collect { (config, requireBiometric) ->
                 val status = BiometricAuth.status(getApplication())
+                val previousHost = _state.value.config.host
+                val hostChanged = previousHost.isNotBlank() && previousHost != config.host
                 _state.update { current ->
                     // Lock only on the first read, which is a fresh app start (or a
                     // restart after the app was killed). Returning from the background
@@ -108,6 +112,9 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                         biometricAvailable = status.canUse,
                         biometricMessage = status.message,
                         securityReady = true,
+                        guests = if (hostChanged) emptyList() else current.guests,
+                        nodeStatus = if (hostChanged) null else current.nodeStatus,
+                        lastUpdatedAt = if (hostChanged) 0L else current.lastUpdatedAt,
                         locked = when {
                             !canLock -> false
                             freshLock -> true
@@ -248,12 +255,14 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             try {
                 val guests = client.listGuests(config)
                 val nodeStatus = runCatching { client.fetchNodeStatus(config) }.getOrNull()
+                val now = System.currentTimeMillis()
                 _state.update {
                     it.copy(
                         refreshing = false,
                         guests = guests,
                         serverReachable = true,
                         nodeStatus = nodeStatus,
+                        lastUpdatedAt = now,
                         message = null,
                     )
                 }
@@ -460,15 +469,19 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                     null
                 }
 
+                val now = System.currentTimeMillis()
                 _state.update {
                     it.copy(
                         phase = Phase.IDLE,
                         serverReachable = true,
                         guests = if (loadGuestsOnSuccess) guests else it.guests,
                         nodeStatus = nodeStatus,
+                        lastUpdatedAt = if (loadGuestsOnSuccess) now else it.lastUpdatedAt,
                         message = "Connected to $summary.",
                     )
                 }
+                if (loadGuestsOnSuccess) {
+                    }
             } catch (e: Exception) {
                 _state.update { it.copy(phase = Phase.IDLE, error = e.userMessage()) }
             }
@@ -491,12 +504,14 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             try {
                 val guests = client.listGuests(config)
                 val nodeStatus = runCatching { client.fetchNodeStatus(config) }.getOrNull()
+                val now = System.currentTimeMillis()
                 _state.update {
                     it.copy(
                         phase = Phase.IDLE,
                         guests = guests,
                         serverReachable = true,
                         nodeStatus = nodeStatus,
+                        lastUpdatedAt = now,
                         message = "Server is up. ${guests.count { g -> g.status == GuestStatus.RUNNING }} " +
                             "guest(s) running.",
                     )
@@ -542,7 +557,6 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                     it.copy(
                         phase = Phase.IDLE,
                         serverReachable = false,
-                        guests = emptyList(),
                         error = null,
                         message = NODE_OFF_MESSAGE,
                     )
@@ -560,29 +574,35 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
-    /** Starts a periodic refresh so the guest list stays current while visible. */
-    fun startPolling(intervalMillis: Long = 10_000) {
-        if (pollJob?.isActive == true) return
-        pollJob = viewModelScope.launch {
+    /**
+     * Keeps the guest list current while the screen is visible.
+     *
+     * Reads run in the background and never touch [UiState.refreshing], so the
+     * list updates in place instead of flashing a loading state. The first read
+     * happens immediately, then every [intervalMillis] while the screen is up.
+     */
+    fun onScreenVisible(intervalMillis: Long = 10_000) {
+        if (refreshJob?.isActive == true) return
+        refreshJob = viewModelScope.launch {
             // Config is read from disk asynchronously. Wait for it before the first
-            // poll so returning to the app does not sit on a stale "offline" state.
+            // read so returning to the app does not sit on a stale "offline" state.
             while (!_state.value.configured) delay(100)
-            if (_state.value.phase == Phase.IDLE) pollOnce()
+            if (_state.value.phase == Phase.IDLE) refreshQuietly()
             while (true) {
                 delay(intervalMillis)
                 if (_state.value.phase == Phase.IDLE && _state.value.configured) {
-                    pollOnce()
+                    refreshQuietly()
                 }
             }
         }
     }
 
-    fun stopPolling() {
-        pollJob?.cancel()
-        pollJob = null
+    fun onScreenHidden() {
+        refreshJob?.cancel()
+        refreshJob = null
     }
 
-    private suspend fun pollOnce() {
+    private suspend fun refreshQuietly() {
         if (!_state.value.configured) return
         val config = _state.value.config
         runCatching { client.listGuests(config) }
@@ -593,17 +613,18 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                         guests = guests,
                         serverReachable = true,
                         nodeStatus = nodeStatus,
+                        lastUpdatedAt = System.currentTimeMillis(),
                         message = it.message.takeUnless { message -> message == NODE_OFF_MESSAGE },
                     )
                 }
             }
             .onFailure {
-                _state.update { it.copy(serverReachable = false, nodeStatus = null, guests = emptyList()) }
+                _state.update { it.copy(serverReachable = false) }
             }
     }
 
     override fun onCleared() {
-        stopPolling()
+        onScreenHidden()
         super.onCleared()
     }
 

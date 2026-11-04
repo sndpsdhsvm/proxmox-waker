@@ -1,10 +1,24 @@
 package dev.sndp.proxmoxwaker.ui
 
 import androidx.activity.compose.BackHandler
+import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.animateColorAsState
+import androidx.compose.animation.core.LinearEasing
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.animateIntAsState
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.scaleIn
+import androidx.compose.animation.scaleOut
+import androidx.compose.animation.slideInHorizontally
+import androidx.compose.animation.slideOutHorizontally
+import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -14,10 +28,12 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -27,8 +43,10 @@ import androidx.compose.material.icons.outlined.Computer
 import androidx.compose.material.icons.outlined.Dns
 import androidx.compose.material.icons.outlined.ErrorOutline
 import androidx.compose.material.icons.outlined.Info
+import androidx.compose.material.icons.outlined.MoreVert
 import androidx.compose.material.icons.outlined.PlayArrow
 import androidx.compose.material.icons.outlined.PowerSettingsNew
+import androidx.compose.material.icons.outlined.Refresh
 import androidx.compose.material.icons.outlined.Settings
 import androidx.compose.material.icons.outlined.StopCircle
 import androidx.compose.material3.AlertDialog
@@ -51,7 +69,6 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
-import androidx.compose.material3.pulltorefresh.PullToRefreshDefaults
 import androidx.compose.material3.pulltorefresh.pullToRefresh
 import androidx.compose.material3.pulltorefresh.rememberPullToRefreshState
 import androidx.compose.runtime.Composable
@@ -63,11 +80,14 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
+import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
@@ -77,17 +97,36 @@ import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import dev.sndp.proxmoxwaker.data.Guest
 import dev.sndp.proxmoxwaker.data.GuestStatus
+import kotlinx.coroutines.delay
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun MainScreen(vm: MainViewModel) {
     val state by vm.state.collectAsStateWithLifecycle()
     var confirmShutdown by remember { mutableStateOf(false) }
+    var actionGuest by remember { mutableStateOf<Guest?>(null) }
+    var confirmGuestAction by remember { mutableStateOf<Pair<Guest, GuestAction>?>(null) }
+    var wasWaking by remember { mutableStateOf(false) }
+    var celebrate by remember { mutableStateOf(false) }
+
+    val haptics = LocalHapticFeedback.current
+    val tick = { haptics.performHapticFeedback(HapticFeedbackType.LongPress) }
 
     val snackbarHostState = remember { SnackbarHostState() }
 
     // System back closes Settings instead of leaving the app.
     BackHandler(enabled = state.showSettings) { vm.closeSettings() }
+
+    // A successful wake gets a small celebration once the API answers again.
+    LaunchedEffect(state.phase, state.serverReachable) {
+        val wakingNow = state.phase == Phase.WAKING || state.phase == Phase.WAITING_FOR_SERVER
+        if (wakingNow) wasWaking = true
+        if (wasWaking && state.serverReachable && state.phase == Phase.IDLE) {
+            wasWaking = false
+            celebrate = true
+            haptics.performHapticFeedback(HapticFeedbackType.LongPress)
+        }
+    }
 
     // Settings shows its own result notes. Letting the snackbar consume the
     // message here would clear it before Settings could render it.
@@ -111,6 +150,8 @@ fun MainScreen(vm: MainViewModel) {
     }
 
     Box(modifier = Modifier.fillMaxSize()) {
+        AuroraBackdrop(modifier = Modifier.fillMaxSize())
+
         Scaffold(
             snackbarHost = {
                 SnackbarHost(
@@ -127,7 +168,8 @@ fun MainScreen(vm: MainViewModel) {
                     )
                 }
             },
-            containerColor = MaterialTheme.colorScheme.background,
+            containerColor = Color.Transparent,
+            contentColor = MaterialTheme.colorScheme.onBackground,
             topBar = {
                 TopAppBar(
                     colors = TopAppBarDefaults.topAppBarColors(
@@ -154,6 +196,33 @@ fun MainScreen(vm: MainViewModel) {
                         }
                     },
                     actions = {
+                        val refreshRotation by animateFloatAsState(
+                            targetValue = if (state.refreshing) 360f else 0f,
+                            animationSpec = tween(durationMillis = 850, easing = LinearEasing),
+                            label = "refreshAction",
+                        )
+                        IconButton(
+                            onClick = {
+                                tick()
+                                vm.refresh()
+                            },
+                            enabled = state.configured && !state.refreshing && !state.busy,
+                        ) {
+                            Icon(
+                                imageVector = Icons.Outlined.Refresh,
+                                contentDescription = "Refresh",
+                                modifier = Modifier
+                                    .size(20.dp)
+                                    .graphicsLayer {
+                                        rotationZ = if (state.refreshing) refreshRotation else 0f
+                                    },
+                                tint = if (state.refreshing) {
+                                    MaterialTheme.colorScheme.primary
+                                } else {
+                                    MaterialTheme.colorScheme.onSurfaceVariant
+                                },
+                            )
+                        }
                         IconButton(onClick = vm::openSettings) {
                             Icon(Icons.Outlined.Settings, contentDescription = "Settings")
                         }
@@ -162,6 +231,7 @@ fun MainScreen(vm: MainViewModel) {
             },
         ) { padding ->
             val pullState = rememberPullToRefreshState()
+            val listState = rememberLazyListState()
             Box(
                 modifier = Modifier
                     .fillMaxSize()
@@ -169,66 +239,94 @@ fun MainScreen(vm: MainViewModel) {
                     .pullToRefresh(
                         isRefreshing = state.refreshing,
                         state = pullState,
-                        enabled = state.serverReachable,
+                        enabled = state.configured,
                         onRefresh = vm::refresh,
                     ),
                 contentAlignment = Alignment.TopStart,
             ) {
                 LazyColumn(
+                    state = listState,
                     modifier = Modifier.fillMaxSize(),
                     contentPadding = PaddingValues(start = 20.dp, end = 20.dp, top = 8.dp, bottom = 32.dp),
                     verticalArrangement = Arrangement.spacedBy(16.dp),
                 ) {
-                    // Messages shown as Toasts
-
                     item {
-                        NodePanel(
-                            state = state,
-                            onWake = vm::wakeServer,
-                            onShutdown = { confirmShutdown = true },
-                        )
-                    }
-
-                    item {
-                        SectionHeader(state)
-                    }
-
-                    item {
-                        if (state.guests.isEmpty()) {
-                            EmptyState(state)
-                        } else {
-                            GuestList(
+                        AnimatedEntrance(order = 0) {
+                            NodePanel(
                                 state = state,
-                                onStart = vm::startGuest,
-                                onShutdown = vm::shutdownGuest,
+                                onWake = {
+                                    tick()
+                                    vm.wakeServer()
+                                },
+                                onShutdown = {
+                                    tick()
+                                    confirmShutdown = true
+                                },
                             )
                         }
                     }
 
                     item {
-                        Text(
-                            text = "AUTO-REFRESH  ·  10S",
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(top = 4.dp),
-                            style = MaterialTheme.typography.labelSmall,
-                            fontFamily = FontFamily.Monospace,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.65f),
-                            textAlign = TextAlign.Center,
-                            letterSpacing = 1.1.sp,
-                        )
+                        AnimatedEntrance(order = 1) {
+                            SectionHeader(state)
+                        }
+                    }
+
+                    item {
+                        AnimatedEntrance(order = 2) {
+                            when {
+                                state.guests.isEmpty() && state.refreshing -> SkeletonGuestList()
+                                state.guests.isEmpty() -> EmptyState(state)
+                                else -> GuestList(
+                                    state = state,
+                                    online = state.serverReachable,
+                                    onStart = { guest ->
+                                        tick()
+                                        vm.startGuest(guest)
+                                    },
+                                    onShutdown = { guest ->
+                                        tick()
+                                        vm.shutdownGuest(guest)
+                                    },
+                                    onMore = { actionGuest = it },
+                                )
+                            }
+                        }
+                    }
+
+                    item {
+                        AnimatedEntrance(order = 3) {
+                            SyncFooter(state)
+                        }
                     }
                 }
 
-                PullToRefreshDefaults.Indicator(
-                    modifier = Modifier.align(Alignment.TopCenter),
+                AuroraRefreshIndicator(
                     isRefreshing = state.refreshing,
-                    state = pullState,
+                    distanceFraction = pullState.distanceFraction,
+                    modifier = Modifier
+                        .align(Alignment.TopCenter)
+                        .offset(y = (pullState.distanceFraction * 56f - 26f).dp)
+                        .padding(top = 8.dp),
                 )
             }
         }
 
-        if (state.showSettings) {
+        if (celebrate) {
+            ConfettiOverlay(
+                active = true,
+                onFinished = { celebrate = false },
+                modifier = Modifier.fillMaxSize(),
+            )
+        }
+
+        AnimatedVisibility(
+            visible = state.showSettings,
+            enter = slideInHorizontally(animationSpec = tween(durationMillis = 320)) { it } +
+                fadeIn(animationSpec = tween(durationMillis = 220)),
+            exit = slideOutHorizontally(animationSpec = tween(durationMillis = 260)) { it } +
+                fadeOut(animationSpec = tween(durationMillis = 160)),
+        ) {
             SettingsScreen(
                 initial = state.config,
                 onSave = vm::saveAndConnect,
@@ -248,14 +346,51 @@ fun MainScreen(vm: MainViewModel) {
         }
     }
 
+    actionGuest?.let { guest ->
+        GuestActionSheet(
+            guest = guest,
+            anyBusy = state.busy,
+            onDismiss = { actionGuest = null },
+            onAction = { action ->
+                tick()
+                when (action) {
+                    GuestAction.START -> vm.startGuest(guest)
+                    GuestAction.SHUTDOWN -> vm.shutdownGuest(guest)
+                    GuestAction.REBOOT -> vm.rebootGuest(guest)
+                    GuestAction.FORCE_STOP, GuestAction.RESET -> {
+                        confirmGuestAction = guest to action
+                    }
+                }
+            },
+        )
+    }
+
     if (confirmShutdown) {
         ShutdownNodeDialog(
             host = state.config.host.ifBlank { "the node" },
             onConfirm = {
                 confirmShutdown = false
+                tick()
                 vm.shutdownNode()
             },
             onDismiss = { confirmShutdown = false },
+        )
+    }
+
+    confirmGuestAction?.let { (guest, action) ->
+        GuestActionConfirmDialog(
+            guest = guest,
+            action = action,
+            onConfirm = {
+                confirmGuestAction = null
+                tick()
+                when (action) {
+                    GuestAction.FORCE_STOP -> vm.stopGuest(guest)
+                    GuestAction.RESET -> vm.resetGuest(guest)
+                    else -> Unit
+                }
+            },
+            onDismiss = { confirmGuestAction = null },
         )
     }
 }
@@ -279,7 +414,7 @@ private fun BrandMark() {
 }
 
 @Composable
-private fun PowerMark(
+internal fun PowerMark(
     modifier: Modifier = Modifier,
     arcColor: Color = MaterialTheme.colorScheme.onSurface,
     barColor: Color = MaterialTheme.colorScheme.primary,
@@ -310,6 +445,12 @@ private fun PowerMark(
 
 @Composable
 private fun SectionHeader(state: UiState) {
+    val count by animateIntAsState(
+        targetValue = state.guests.size,
+        animationSpec = tween(durationMillis = 500),
+        label = "guestCount",
+    )
+
     Row(
         modifier = Modifier
             .fillMaxWidth()
@@ -337,7 +478,7 @@ private fun SectionHeader(state: UiState) {
                     !state.configured -> "—"
                     state.refreshing -> "READING"
                     !state.serverReachable -> "OFFLINE"
-                    else -> "${state.guests.size} FOUND"
+                    else -> "$count FOUND"
                 },
                 style = MaterialTheme.typography.labelSmall,
                 fontFamily = FontFamily.Monospace,
@@ -350,57 +491,92 @@ private fun SectionHeader(state: UiState) {
 @Composable
 private fun GuestList(
     state: UiState,
+    online: Boolean,
     onStart: (Guest) -> Unit,
     onShutdown: (Guest) -> Unit,
+    onMore: (Guest) -> Unit,
 ) {
     Surface(
         modifier = Modifier.fillMaxWidth(),
         shape = RoundedCornerShape(20.dp),
-        color = MaterialTheme.colorScheme.surface,
+        color = MaterialTheme.colorScheme.surface.copy(alpha = 0.92f),
+        contentColor = MaterialTheme.colorScheme.onSurface,
         border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
     ) {
         Column {
             state.guests.forEachIndexed { index, guest ->
-                GuestRow(
-                    guest = guest,
-                    busy = state.startingGuestId == guest.id,
-                    anyBusy = state.busy,
-                    onStart = { onStart(guest) },
-                    onShutdown = { onShutdown(guest) },
-                )
-                if (index != state.guests.lastIndex) {
-                    HorizontalDivider(
-                        modifier = Modifier.padding(horizontal = 16.dp),
-                        color = MaterialTheme.colorScheme.outlineVariant,
-                    )
+                AnimatedEntrance(
+                    order = index.coerceAtMost(5),
+                    stepMillis = 40L,
+                ) {
+                    Column {
+                        GuestRow(
+                            guest = guest,
+                            online = online,
+                            busy = state.startingGuestId == guest.id,
+                            anyBusy = state.busy,
+                            onStart = { onStart(guest) },
+                            onShutdown = { onShutdown(guest) },
+                            onMore = { onMore(guest) },
+                        )
+                        if (index != state.guests.lastIndex) {
+                            HorizontalDivider(
+                                modifier = Modifier.padding(horizontal = 16.dp),
+                                color = MaterialTheme.colorScheme.outlineVariant,
+                            )
+                        }
+                    }
                 }
             }
         }
     }
 }
 
+private enum class GuestRowAction { BUSY, STOP, START }
+
 @Composable
 private fun GuestRow(
     guest: Guest,
+    online: Boolean,
     busy: Boolean,
     anyBusy: Boolean,
     onStart: () -> Unit,
     onShutdown: () -> Unit,
+    onMore: () -> Unit,
 ) {
     val running = guest.status == GuestStatus.RUNNING
-    val statusColor = guestStatusColor(guest.status)
+    val statusColor by animateColorAsState(
+        targetValue = guestStatusColor(guest.status),
+        animationSpec = tween(durationMillis = 420),
+        label = "guestStatus-${guest.id}",
+    )
+    val rowTint by animateColorAsState(
+        targetValue = if (running) statusColor.copy(alpha = 0.05f) else Color.Transparent,
+        animationSpec = tween(durationMillis = 500),
+        label = "guestTint-${guest.id}",
+    )
+    val rowAction = when {
+        busy -> GuestRowAction.BUSY
+        running -> GuestRowAction.STOP
+        else -> GuestRowAction.START
+    }
+    val quickInteraction = remember { MutableInteractionSource() }
 
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(start = 16.dp, end = 8.dp, top = 12.dp, bottom = 12.dp),
+            .background(rowTint)
+            .padding(start = 16.dp, end = 4.dp, top = 12.dp, bottom = 12.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Box(
             modifier = Modifier
                 .size(38.dp)
                 .clip(RoundedCornerShape(12.dp))
-                .background(MaterialTheme.colorScheme.surfaceVariant),
+                .background(
+                    if (running) statusColor.copy(alpha = 0.11f)
+                    else MaterialTheme.colorScheme.surfaceVariant,
+                ),
             contentAlignment = Alignment.Center,
         ) {
             Icon(
@@ -421,6 +597,7 @@ private fun GuestRow(
             Text(
                 text = guest.name,
                 style = MaterialTheme.typography.titleSmall,
+                color = MaterialTheme.colorScheme.onSurface,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
             )
@@ -433,12 +610,7 @@ private fun GuestRow(
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
                 Spacer(Modifier.width(8.dp))
-                Box(
-                    modifier = Modifier
-                        .size(6.dp)
-                        .clip(CircleShape)
-                        .background(statusColor),
-                )
+                StatusDot(color = statusColor, pulsing = running, size = 6.dp)
                 Spacer(Modifier.width(5.dp))
                 Text(
                     text = guest.status.label.uppercase(),
@@ -449,37 +621,65 @@ private fun GuestRow(
             }
         }
 
-        when {
-            busy -> CircularProgressIndicator(
-                modifier = Modifier
-                    .padding(horizontal = 12.dp)
-                    .size(20.dp),
-                strokeWidth = 2.dp,
+        AnimatedContent(
+            targetState = rowAction,
+            transitionSpec = {
+                (fadeIn(animationSpec = tween(durationMillis = 180)) +
+                    scaleIn(initialScale = 0.92f)) togetherWith
+                    (fadeOut(animationSpec = tween(durationMillis = 120)) +
+                        scaleOut(targetScale = 0.92f))
+            },
+            contentAlignment = Alignment.Center,
+            label = "guestAction-${guest.id}",
+        ) { action ->
+            when (action) {
+                GuestRowAction.BUSY -> CircularProgressIndicator(
+                    modifier = Modifier
+                        .padding(horizontal = 12.dp)
+                        .size(20.dp),
+                    strokeWidth = 2.dp,
+                )
+
+                GuestRowAction.STOP -> TextButton(
+                    onClick = onShutdown,
+                    enabled = online && !anyBusy,
+                    interactionSource = quickInteraction,
+                    modifier = Modifier.pressScale(quickInteraction, online && !anyBusy),
+                    colors = ButtonDefaults.textButtonColors(
+                        contentColor = MaterialTheme.colorScheme.onSurfaceVariant,
+                    ),
+                ) {
+                    Icon(Icons.Outlined.StopCircle, contentDescription = null, modifier = Modifier.size(16.dp))
+                    Spacer(Modifier.width(5.dp))
+                    Text("Stop")
+                }
+
+                GuestRowAction.START -> TextButton(
+                    onClick = onStart,
+                    enabled = online && !anyBusy,
+                    interactionSource = quickInteraction,
+                    modifier = Modifier.pressScale(quickInteraction, online && !anyBusy),
+                    colors = ButtonDefaults.textButtonColors(
+                        contentColor = MaterialTheme.colorScheme.primary,
+                    ),
+                ) {
+                    Icon(Icons.Outlined.PlayArrow, contentDescription = null, modifier = Modifier.size(17.dp))
+                    Spacer(Modifier.width(4.dp))
+                    Text("Start")
+                }
+            }
+        }
+
+        IconButton(
+            onClick = onMore,
+            enabled = online && !busy,
+        ) {
+            Icon(
+                imageVector = Icons.Outlined.MoreVert,
+                contentDescription = "More actions for ${guest.name}",
+                modifier = Modifier.size(19.dp),
+                tint = MaterialTheme.colorScheme.onSurfaceVariant,
             )
-
-            running -> TextButton(
-                onClick = onShutdown,
-                enabled = !anyBusy,
-                colors = ButtonDefaults.textButtonColors(
-                    contentColor = MaterialTheme.colorScheme.onSurfaceVariant,
-                ),
-            ) {
-                Icon(Icons.Outlined.StopCircle, contentDescription = null, modifier = Modifier.size(16.dp))
-                Spacer(Modifier.width(5.dp))
-                Text("Stop")
-            }
-
-            else -> TextButton(
-                onClick = onStart,
-                enabled = !anyBusy,
-                colors = ButtonDefaults.textButtonColors(
-                    contentColor = MaterialTheme.colorScheme.primary,
-                ),
-            ) {
-                Icon(Icons.Outlined.PlayArrow, contentDescription = null, modifier = Modifier.size(17.dp))
-                Spacer(Modifier.width(4.dp))
-                Text("Start")
-            }
         }
     }
 }
@@ -494,80 +694,91 @@ private fun NodePanel(
     val shuttingDown = state.phase == Phase.SHUTTING_DOWN
     val waking = state.phase == Phase.WAKING || state.phase == Phase.WAITING_FOR_SERVER
 
-    val statusColor = when {
-        shuttingDown -> MaterialTheme.colorScheme.error
-        waking -> StatusColors.warn
-        online -> StatusColors.running
-        else -> StatusColors.stopped
-    }
-
     val title = when (state.phase) {
-        Phase.WAKING -> "Sending magic packet"
+        Phase.WAKING -> "Sending magic"
         Phase.WAITING_FOR_SERVER -> "Waking up"
-        Phase.SHUTTING_DOWN -> "Shutting down"
+        Phase.SHUTTING_DOWN -> "Powering down"
         Phase.LOADING_GUESTS -> if (online) "Reading machines" else "Connecting"
         Phase.STARTING -> "Working"
         Phase.IDLE -> when {
             !state.configured -> "Not configured"
             online -> "Online"
-            else -> "Offline"
+            else -> "Asleep"
         }
     }
 
+    val running = state.guests.count { it.status == GuestStatus.RUNNING }
+    val animatedTotal by animateIntAsState(
+        targetValue = state.guests.size,
+        animationSpec = tween(durationMillis = 500),
+        label = "nodeGuestCount",
+    )
+    val animatedRunning by animateIntAsState(
+        targetValue = running,
+        animationSpec = tween(durationMillis = 650),
+        label = "nodeRunningCount",
+    )
     val subtitle = when {
-        !state.configured -> "Open settings to connect your Proxmox node."
-        shuttingDown -> "Waiting for the API to stop answering. This can take a minute."
-        waking -> "The node is booting. This can take a minute."
-        online -> "${state.config.host} · ${state.guests.size} machines"
-        state.config.host.isNotBlank() -> "${state.config.host} · Wake it to manage its machines"
+        !state.configured -> "Add your Proxmox host in settings to begin."
+        shuttingDown -> "Watching the API until it goes quiet."
+        waking -> "Hold tight — the node is booting."
+        online -> "${state.config.host} · $animatedTotal machines, $animatedRunning running"
+        state.config.host.isNotBlank() -> "${state.config.host} is asleep. Send it a magic packet."
         else -> "Add your node in settings."
     }
 
     Surface(
         modifier = Modifier.fillMaxWidth(),
         shape = RoundedCornerShape(24.dp),
-        color = MaterialTheme.colorScheme.surface,
+        color = MaterialTheme.colorScheme.surface.copy(alpha = 0.92f),
+        contentColor = MaterialTheme.colorScheme.onSurface,
         border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
     ) {
         Column(modifier = Modifier.padding(20.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
-                Box(
-                    modifier = Modifier
-                        .size(7.dp)
-                        .clip(CircleShape)
-                        .background(statusColor),
+                PowerCore(
+                    online = online,
+                    waking = waking,
+                    shuttingDown = shuttingDown,
+                    modifier = Modifier.size(62.dp),
                 )
-                Spacer(Modifier.width(8.dp))
-                Text(
-                    text = "SERVER",
-                    style = MaterialTheme.typography.labelSmall,
-                    letterSpacing = 1.2.sp,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-                Spacer(Modifier.weight(1f))
-                Text(
-                    text = state.config.node.ifBlank { "auto-detect" },
-                    style = MaterialTheme.typography.labelSmall,
-                    fontFamily = FontFamily.Monospace,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
+
+                Spacer(Modifier.width(14.dp))
+
+                Column(modifier = Modifier.weight(1f)) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text(
+                            text = "SERVER",
+                            style = MaterialTheme.typography.labelSmall,
+                            letterSpacing = 1.2.sp,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                        Spacer(Modifier.weight(1f))
+                        Text(
+                            text = state.config.node.ifBlank { "auto-detect" },
+                            style = MaterialTheme.typography.labelSmall,
+                            fontFamily = FontFamily.Monospace,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+
+                    Spacer(Modifier.height(4.dp))
+
+                    Text(
+                        text = title,
+                        style = MaterialTheme.typography.headlineSmall,
+                        color = MaterialTheme.colorScheme.onSurface,
+                    )
+
+                    Spacer(Modifier.height(3.dp))
+
+                    Text(
+                        text = subtitle,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
             }
-
-            Spacer(Modifier.height(16.dp))
-
-            Text(
-                text = title,
-                style = MaterialTheme.typography.headlineSmall,
-                color = MaterialTheme.colorScheme.onSurface,
-            )
-
-            Spacer(Modifier.height(4.dp))
-
-            Text(
-                text = subtitle,
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
 
             if (shuttingDown || waking || state.phase == Phase.LOADING_GUESTS) {
                 Spacer(Modifier.height(16.dp))
@@ -688,6 +899,27 @@ private fun ResourceBar(
     used: Long = 0,
     total: Long = 0,
 ) {
+    val target = (percent / 100f).coerceIn(0f, 1f)
+    val animated by animateFloatAsState(
+        targetValue = target,
+        animationSpec = tween(durationMillis = 800),
+        label = "resourceBar-$label",
+    )
+    val barColor by animateColorAsState(
+        targetValue = if (percent >= 90) {
+            MaterialTheme.colorScheme.error
+        } else {
+            MaterialTheme.colorScheme.primary
+        },
+        animationSpec = tween(durationMillis = 500),
+        label = "resourceColor-$label",
+    )
+    val animatedPercent by animateIntAsState(
+        targetValue = percent,
+        animationSpec = tween(durationMillis = 800),
+        label = "resourcePercent-$label",
+    )
+
     Column(modifier = Modifier.fillMaxWidth()) {
         Row(modifier = Modifier.fillMaxWidth()) {
             Text(
@@ -699,14 +931,14 @@ private fun ResourceBar(
             Spacer(Modifier.weight(1f))
             if (total > 0) {
                 Text(
-                    text = "${formatBytes(used)} / ${formatBytes(total)} ($percent%)",
+                    text = "${formatBytes(used)} / ${formatBytes(total)} ($animatedPercent%)",
                     style = MaterialTheme.typography.labelSmall,
                     fontFamily = FontFamily.Monospace,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             } else {
                 Text(
-                    text = "$percent%",
+                    text = "$animatedPercent%",
                     style = MaterialTheme.typography.labelSmall,
                     fontFamily = FontFamily.Monospace,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -715,12 +947,12 @@ private fun ResourceBar(
         }
         Spacer(Modifier.height(4.dp))
         LinearProgressIndicator(
-            progress = { (percent / 100f).coerceIn(0f, 1f) },
+            progress = { animated },
             modifier = Modifier
                 .fillMaxWidth()
                 .height(4.dp)
                 .clip(CircleShape),
-            color = if (percent >= 90) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.primary,
+            color = barColor,
             trackColor = MaterialTheme.colorScheme.surfaceVariant,
         )
     }
@@ -736,6 +968,121 @@ private fun formatBytes(bytes: Long): String {
         unit++
     }
     return if (unit == 0) "${value.toLong()}B" else String.format("%.1f%s", value, units[unit])
+}
+
+@Composable
+private fun SyncFooter(state: UiState) {
+    var now by remember { mutableStateOf(System.currentTimeMillis()) }
+    LaunchedEffect(state.lastUpdatedAt) {
+        while (true) {
+            now = System.currentTimeMillis()
+            delay(1_000)
+        }
+    }
+
+    val ageSeconds = if (state.lastUpdatedAt > 0) {
+        ((now - state.lastUpdatedAt) / 1000).coerceAtLeast(0)
+    } else {
+        -1
+    }
+    val ageText = when {
+        ageSeconds < 0 -> "NEVER"
+        ageSeconds < 60 -> "${ageSeconds}S AGO"
+        ageSeconds < 3_600 -> "${ageSeconds / 60}M AGO"
+        else -> "${ageSeconds / 3_600}H AGO"
+    }
+    val label = when {
+        !state.configured -> "NOT CONNECTED"
+        state.refreshing -> "SYNCING…"
+        !state.serverReachable && state.guests.isNotEmpty() -> "RECONNECTING…"
+        !state.serverReachable -> "OFFLINE · RETRYING"
+        ageSeconds < 0 -> "CONNECTING…"
+        ageSeconds < 3 -> "LIVE · JUST NOW"
+        else -> "LIVE · $ageText"
+    }
+    val dotColor = when {
+        !state.configured || !state.serverReachable -> StatusColors.stopped
+        state.refreshing -> StatusColors.warn
+        else -> StatusColors.running
+    }
+
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(top = 4.dp),
+        horizontalArrangement = Arrangement.Center,
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        StatusDot(
+            color = dotColor,
+            size = 5.dp,
+            pulsing = state.configured && state.serverReachable && !state.refreshing,
+        )
+        Spacer(Modifier.width(8.dp))
+        Text(
+            text = label,
+            style = MaterialTheme.typography.labelSmall,
+            fontFamily = FontFamily.Monospace,
+            color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f),
+            letterSpacing = 1.1.sp,
+        )
+    }
+}
+
+@Composable
+private fun SkeletonGuestList() {
+    Surface(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(20.dp),
+        color = MaterialTheme.colorScheme.surface.copy(alpha = 0.92f),
+        contentColor = MaterialTheme.colorScheme.onSurface,
+        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
+    ) {
+        Column {
+            repeat(3) { index ->
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 16.dp, vertical = 16.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    ShimmerBlock(
+                        modifier = Modifier
+                            .size(38.dp)
+                            .clip(RoundedCornerShape(12.dp)),
+                    )
+                    Spacer(Modifier.width(12.dp))
+                    Column(modifier = Modifier.weight(1f)) {
+                        ShimmerBlock(
+                            modifier = Modifier
+                                .fillMaxWidth(0.55f)
+                                .height(12.dp)
+                                .clip(CircleShape),
+                        )
+                        Spacer(Modifier.height(8.dp))
+                        ShimmerBlock(
+                            modifier = Modifier
+                                .fillMaxWidth(0.35f)
+                                .height(9.dp)
+                                .clip(CircleShape),
+                        )
+                    }
+                    Spacer(Modifier.width(16.dp))
+                    ShimmerBlock(
+                        modifier = Modifier
+                            .size(width = 54.dp, height = 28.dp)
+                            .clip(RoundedCornerShape(8.dp)),
+                    )
+                }
+                if (index != 2) {
+                    HorizontalDivider(
+                        modifier = Modifier.padding(horizontal = 16.dp),
+                        color = MaterialTheme.colorScheme.outlineVariant,
+                    )
+                }
+            }
+        }
+    }
 }
 
 @Composable
@@ -755,12 +1102,14 @@ private fun EmptyState(state: UiState) {
             if (state.refreshing) {
                 CircularProgressIndicator(modifier = Modifier.size(26.dp), strokeWidth = 2.dp)
             } else {
-                Icon(
-                    imageVector = if (state.configured) Icons.Outlined.CloudOff else Icons.Outlined.Dns,
-                    contentDescription = null,
-                    modifier = Modifier.size(30.dp),
-                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
+                Bobbing {
+                    Icon(
+                        imageVector = if (state.configured) Icons.Outlined.CloudOff else Icons.Outlined.Dns,
+                        contentDescription = null,
+                        modifier = Modifier.size(30.dp),
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
             }
             Spacer(Modifier.height(14.dp))
             Text(
@@ -771,6 +1120,7 @@ private fun EmptyState(state: UiState) {
                     else -> "No machines found"
                 },
                 style = MaterialTheme.typography.titleSmall,
+                color = MaterialTheme.colorScheme.onSurface,
             )
             Spacer(Modifier.height(4.dp))
             Text(
@@ -909,7 +1259,59 @@ private fun ShutdownNodeDialog(
 }
 
 @Composable
-private fun guestStatusColor(status: GuestStatus): Color = when (status) {
+private fun GuestActionConfirmDialog(
+    guest: Guest,
+    action: GuestAction,
+    onConfirm: () -> Unit,
+    onDismiss: () -> Unit,
+) {
+    val forceStop = action == GuestAction.FORCE_STOP
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        icon = {
+            Icon(
+                Icons.Outlined.PowerSettingsNew,
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.error,
+            )
+        },
+        title = {
+            Text(if (forceStop) "Force stop ${guest.name}?" else "Reset ${guest.name}?")
+        },
+        text = {
+            Text(
+                if (forceStop) {
+                    "This cuts power immediately. Anything unsaved inside the guest may be lost."
+                } else {
+                    "This is a hard reset, like pressing the reset button. " +
+                        "Anything unsaved inside the guest may be lost."
+                },
+                style = MaterialTheme.typography.bodyMedium,
+            )
+        },
+        confirmButton = {
+            TextButton(
+                onClick = onConfirm,
+                colors = ButtonDefaults.textButtonColors(
+                    contentColor = MaterialTheme.colorScheme.error,
+                ),
+            ) {
+                Text(if (forceStop) "Force stop" else "Reset")
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) {
+                Text("Cancel")
+            }
+        },
+        containerColor = MaterialTheme.colorScheme.surface,
+        titleContentColor = MaterialTheme.colorScheme.onSurface,
+        textContentColor = MaterialTheme.colorScheme.onSurfaceVariant,
+    )
+}
+
+@Composable
+internal fun guestStatusColor(status: GuestStatus): Color = when (status) {
     GuestStatus.RUNNING -> StatusColors.running
     GuestStatus.STOPPED -> StatusColors.stopped
     GuestStatus.UNKNOWN -> StatusColors.stopped

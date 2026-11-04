@@ -30,12 +30,14 @@ host on your local network.
   <img src="docs/screenshots/settings-redacted.png" width="320" alt="Settings screen for the host, credentials, Wake-on-LAN, and app lock">
 </p>
 
-- **Node panel** — one calm card for the host. It shows online/offline state, the
-  node name, and the two power actions: **Wake** and **Shut down**. Shutdown asks
-  for confirmation and then watches the API until the node stops answering.
+- **Node panel** — one calm card for the host. An animated power core shows
+  online/offline state, alongside the node name and the two power actions: **Wake**
+  and **Shut down**. Shutdown asks for confirmation and then watches the API until
+  the node stops answering.
 - **Machine list** — every QEMU VM and LXC container on the node in a single
   uncluttered list, with a status dot and Start or Stop. Running machines offer
-  **Stop** (a graceful ACPI shutdown).
+  **Stop** (a graceful ACPI shutdown). The ⋮ menu adds **Reboot**, **Force stop**,
+  and, for VMs, **Reset**; the destructive actions confirm first.
 - **Settings** — host, port, node name, credentials, the wake-on-LAN details, and
   the fingerprint lock. **Test** checks without saving; **Save and connect**
   applies and returns to the main screen, and the system back button does the
@@ -46,10 +48,20 @@ host on your local network.
   the app can power the whole node; turn it off in Settings if you prefer. A
   device with no enrolled fingerprint is not locked out.
 
-The list refreshes by itself every 10 seconds while the app is on screen, and again
-whenever you return to it. Pull down anywhere on the list for a manual refresh. The
+The list refreshes quietly every 10 seconds while the app is on screen, and
+immediately whenever you return to it. Reads happen in place: no spinner, no
+layout jump, no label counting down — the rows just settle onto their new values
+and a footer shows how long ago the last read landed. Nothing is cached to disk.
+Pull down anywhere on the list for a manual refresh — including while the node is
+offline. The refresh puck fills as you drag, ticks the haptic at the trigger point,
+and spins with the theme accent gradient while the API call is in flight. A
+successful wake ends with a small confetti burst. Motion carries the interface: the node card,
+machine list, and footer assemble with a soft stagger, counters and resource bars
+ease to their new values, and each row's Start/Stop control crossfades in place.
+Settings slides over the main screen, shimmering skeleton rows hold the list while
+the first read lands, and splash, lock, and main crossfade into one another. The
 visual language follows Omarchy: near-black plum, warm off-white text, a violet
-accent, and a quieter, type-led layout.
+accent, and a quieter, type-led layout with a slow aurora glow behind it.
 
 ---
 
@@ -287,7 +299,7 @@ If the server is already on, skip the wake step — the app refreshes on resume,
 
 ```
 app/src/main/java/dev/sndp/proxmoxwaker/
-├── MainActivity.kt              Compose host, fingerprint prompt, list polling
+├── MainActivity.kt              Compose host, fingerprint prompt, app stage transitions
 ├── data/
 │   ├── ProxmoxConfig.kt         Config + Guest/GuestType/GuestStatus models
 │   └── SettingsRepository.kt    DataStore persistence
@@ -300,7 +312,9 @@ app/src/main/java/dev/sndp/proxmoxwaker/
 │   └── BiometricAuth.kt         Fingerprint availability check + system prompt
 └── ui/
     ├── MainViewModel.kt         State machine: wake → wait → list → start/shutdown
-    ├── MainScreen.kt            Node panel, guest list, pull-to-refresh
+    ├── MainScreen.kt            Node panel, guest list, pull-to-refresh, dialogs
+    ├── GuestSheet.kt            Per-guest action sheet (reboot, force stop, reset)
+    ├── Effects.kt               Aurora, confetti, power core, shimmer, entrances
     ├── LockScreen.kt            Fingerprint gate shown while locked
     ├── SettingsScreen.kt        Config editor + app-lock toggle
     └── Theme.kt                 Omarchy-inspired Material 3 theme

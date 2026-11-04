@@ -3,6 +3,12 @@ package dev.sndp.proxmoxwaker
 import android.os.Bundle
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
+import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.scaleIn
+import androidx.compose.animation.togetherWith
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -61,21 +67,37 @@ class MainActivity : FragmentActivity() {
                     }
                 }
 
-                when {
-                    !state.securityReady -> LockSplash()
-                    state.locked -> LockScreen(
-                        host = state.config.host,
-                        message = state.lockMessage,
-                        onUnlock = { requestUnlock(vm) },
-                    )
-                    else -> {
-                        // Refresh on resume and keep the guest list current while visible.
-                        // Polling stops when the app goes to the background or locks.
-                        LifecycleResumeEffect(Unit) {
-                            vm.startPolling()
-                            onPauseOrDispose { vm.stopPolling() }
+                val stage = when {
+                    !state.securityReady -> AppStage.SPLASH
+                    state.locked -> AppStage.LOCKED
+                    else -> AppStage.MAIN
+                }
+
+                AnimatedContent(
+                    targetState = stage,
+                    transitionSpec = {
+                        (fadeIn(animationSpec = tween(durationMillis = 420)) +
+                            scaleIn(initialScale = 0.985f)) togetherWith
+                            fadeOut(animationSpec = tween(durationMillis = 220))
+                    },
+                    label = "appStage",
+                ) { target ->
+                    when (target) {
+                        AppStage.SPLASH -> LockSplash()
+                        AppStage.LOCKED -> LockScreen(
+                            host = state.config.host,
+                            message = state.lockMessage,
+                            onUnlock = { requestUnlock(vm) },
+                        )
+                        AppStage.MAIN -> {
+                            // Keep the list current while visible; reads happen in
+                            // the background so the UI never flashes a loader.
+                            LifecycleResumeEffect(Unit) {
+                                vm.onScreenVisible()
+                                onPauseOrDispose { vm.onScreenHidden() }
+                            }
+                            MainScreen(vm)
                         }
-                        MainScreen(vm)
                     }
                 }
             }
@@ -115,3 +137,5 @@ class MainActivity : FragmentActivity() {
         }
     }
 }
+
+private enum class AppStage { SPLASH, LOCKED, MAIN }
