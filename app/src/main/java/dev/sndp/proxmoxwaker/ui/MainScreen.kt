@@ -97,7 +97,6 @@ import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import dev.sndp.proxmoxwaker.data.Guest
 import dev.sndp.proxmoxwaker.data.GuestStatus
-import kotlinx.coroutines.delay
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -972,33 +971,12 @@ private fun formatBytes(bytes: Long): String {
 
 @Composable
 private fun SyncFooter(state: UiState) {
-    var now by remember { mutableStateOf(System.currentTimeMillis()) }
-    LaunchedEffect(state.lastUpdatedAt) {
-        while (true) {
-            now = System.currentTimeMillis()
-            delay(1_000)
-        }
-    }
-
-    val ageSeconds = if (state.lastUpdatedAt > 0) {
-        ((now - state.lastUpdatedAt) / 1000).coerceAtLeast(0)
-    } else {
-        -1
-    }
-    val ageText = when {
-        ageSeconds < 0 -> "NEVER"
-        ageSeconds < 60 -> "${ageSeconds}S AGO"
-        ageSeconds < 3_600 -> "${ageSeconds / 60}M AGO"
-        else -> "${ageSeconds / 3_600}H AGO"
-    }
     val label = when {
         !state.configured -> "NOT CONNECTED"
         state.refreshing -> "SYNCING…"
         !state.serverReachable && state.guests.isNotEmpty() -> "RECONNECTING…"
         !state.serverReachable -> "OFFLINE · RETRYING"
-        ageSeconds < 0 -> "CONNECTING…"
-        ageSeconds < 3 -> "LIVE · JUST NOW"
-        else -> "LIVE · $ageText"
+        else -> "LIVE"
     }
     val dotColor = when {
         !state.configured || !state.serverReachable -> StatusColors.stopped

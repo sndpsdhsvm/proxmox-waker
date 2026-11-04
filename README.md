@@ -51,7 +51,8 @@ host on your local network.
 The list refreshes quietly every 10 seconds while the app is on screen, and
 immediately whenever you return to it. Reads happen in place: no spinner, no
 layout jump, no label counting down — the rows just settle onto their new values
-and a footer shows how long ago the last read landed. Nothing is cached to disk.
+and a small footer shows whether the app is live, reconnecting, or offline. Nothing
+is cached to disk.
 Pull down anywhere on the list for a manual refresh — including while the node is
 offline. The refresh puck fills as you drag, ticks the haptic at the trigger point,
 and spins with the theme accent gradient while the API call is in flight. A

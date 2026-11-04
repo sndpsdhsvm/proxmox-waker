@@ -10,7 +10,7 @@ All notable changes to this project are documented here.
   request finally reaches the node.
 - Per-guest action sheet: Reboot, Force stop, and Reset (VMs) in addition to the
   existing one-tap Start/Stop. Destructive actions ask for confirmation.
-- Live sync footer showing how long ago the guest list last refreshed, and
+- Live sync footer showing live, reconnecting, or offline state, and
   pull-to-retry while the node is offline.
 - Resource bars animate to new values, running guests pulse, and power actions
   give haptic feedback.

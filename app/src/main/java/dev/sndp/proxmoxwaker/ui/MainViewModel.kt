@@ -43,8 +43,6 @@ data class UiState(
     val serverReachable: Boolean = false,
     val guests: List<Guest> = emptyList(),
     val nodeStatus: NodeStatus? = null,
-    /** When the list last came back from the API, used by the sync footer. */
-    val lastUpdatedAt: Long = 0L,
     val message: String? = null,
     val error: String? = null,
     val startingGuestId: String? = null,
@@ -114,7 +112,6 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                         securityReady = true,
                         guests = if (hostChanged) emptyList() else current.guests,
                         nodeStatus = if (hostChanged) null else current.nodeStatus,
-                        lastUpdatedAt = if (hostChanged) 0L else current.lastUpdatedAt,
                         locked = when {
                             !canLock -> false
                             freshLock -> true
@@ -255,14 +252,12 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             try {
                 val guests = client.listGuests(config)
                 val nodeStatus = runCatching { client.fetchNodeStatus(config) }.getOrNull()
-                val now = System.currentTimeMillis()
                 _state.update {
                     it.copy(
                         refreshing = false,
                         guests = guests,
                         serverReachable = true,
                         nodeStatus = nodeStatus,
-                        lastUpdatedAt = now,
                         message = null,
                     )
                 }
@@ -469,14 +464,12 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                     null
                 }
 
-                val now = System.currentTimeMillis()
                 _state.update {
                     it.copy(
                         phase = Phase.IDLE,
                         serverReachable = true,
                         guests = if (loadGuestsOnSuccess) guests else it.guests,
                         nodeStatus = nodeStatus,
-                        lastUpdatedAt = if (loadGuestsOnSuccess) now else it.lastUpdatedAt,
                         message = "Connected to $summary.",
                     )
                 }
@@ -504,14 +497,12 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             try {
                 val guests = client.listGuests(config)
                 val nodeStatus = runCatching { client.fetchNodeStatus(config) }.getOrNull()
-                val now = System.currentTimeMillis()
                 _state.update {
                     it.copy(
                         phase = Phase.IDLE,
                         guests = guests,
                         serverReachable = true,
                         nodeStatus = nodeStatus,
-                        lastUpdatedAt = now,
                         message = "Server is up. ${guests.count { g -> g.status == GuestStatus.RUNNING }} " +
                             "guest(s) running.",
                     )
@@ -613,7 +604,6 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                         guests = guests,
                         serverReachable = true,
                         nodeStatus = nodeStatus,
-                        lastUpdatedAt = System.currentTimeMillis(),
                         message = it.message.takeUnless { message -> message == NODE_OFF_MESSAGE },
                     )
                 }
