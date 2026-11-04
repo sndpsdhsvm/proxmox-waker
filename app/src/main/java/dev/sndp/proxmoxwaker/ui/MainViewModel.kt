@@ -572,7 +572,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
      * list updates in place instead of flashing a loading state. The first read
      * happens immediately, then every [intervalMillis] while the screen is up.
      */
-    fun onScreenVisible(intervalMillis: Long = 10_000) {
+    fun onScreenVisible(intervalMillis: Long = 3_000) {
         if (refreshJob?.isActive == true) return
         refreshJob = viewModelScope.launch {
             // Config is read from disk asynchronously. Wait for it before the first

@@ -48,7 +48,7 @@ host on your local network.
   the app can power the whole node; turn it off in Settings if you prefer. A
   device with no enrolled fingerprint is not locked out.
 
-The list refreshes quietly every 10 seconds while the app is on screen, and
+The list refreshes quietly every 3 seconds while the app is on screen, and
 immediately whenever you return to it. Reads happen in place: no spinner, no
 layout jump, no label counting down — the rows just settle onto their new values
 and a small footer shows whether the app is live, reconnecting, or offline. Nothing
@@ -279,7 +279,7 @@ ip link show | grep -A1 "state UP"
    until the node goes offline. Wake-on-LAN can bring it back later.
 
 If the server is already on, skip the wake step — the app refreshes on resume, every
-10 seconds while visible, and whenever you pull down on the list.
+3 seconds while visible, and whenever you pull down on the list.
 
 ## Limitations
 

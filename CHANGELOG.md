@@ -26,7 +26,7 @@ All notable changes to this project are documented here.
   haptic tick at the trigger point, then spins with the theme accent gradient
   while the API call is in flight. The guest list also remembers its scroll
   position.
-- Background refresh is silent: the list re-reads every 10 seconds in place,
+- Background refresh is silent: the list re-reads every 3 seconds in place,
   with no spinner, layout jump, or countdown label, and recovers on its own when
   a read fails.
 
