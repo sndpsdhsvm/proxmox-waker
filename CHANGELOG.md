@@ -2,7 +2,7 @@
 
 All notable changes to this project are documented here.
 
-## Unreleased
+## 1.1.0 - 2026-11-06
 
 - Animated power core on the node card: breathing while online, spinning while
   waking or shutting down, dim while asleep.

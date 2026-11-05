@@ -216,8 +216,8 @@ For the automated GitHub Release workflow, add these repository secrets:
 | `KEY_ALIAS` | key alias |
 | `KEY_PASSWORD` | key password |
 
-Pushing a tag such as `v1.0.0` runs the `Release` workflow, which builds and
-attaches `ProxmoxWaker-v1.0.0.apk` plus `SHA256SUMS`.
+Pushing a tag such as `v1.1.0` runs the `Release` workflow, which builds and
+attaches `ProxmoxWaker-v1.1.0.apk` plus `SHA256SUMS`.
 
 ### Installing it on your phone
 
