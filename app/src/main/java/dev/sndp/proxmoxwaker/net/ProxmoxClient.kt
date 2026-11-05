@@ -126,6 +126,10 @@ class ProxmoxClient(
         synchronized(lock) {
             cachedSession = null
             cachedKey = null
+            // The node name belongs to the host that reported it. Switching hosts
+            // must not reuse the old node when the new host names its nodes
+            // differently.
+            resolvedNode = null
         }
     }
 

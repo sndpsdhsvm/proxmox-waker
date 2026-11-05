@@ -208,7 +208,11 @@ fun MainScreen(vm: MainViewModel) {
                     .pullToRefresh(
                         isRefreshing = state.refreshing,
                         state = pullState,
-                        enabled = state.configured && state.networkAvailable,
+                        enabled = state.configured &&
+                            state.networkAvailable &&
+                            state.serverReachable &&
+                            state.phase == Phase.IDLE &&
+                            !state.refreshing,
                         onRefresh = vm::refresh,
                     ),
                 contentAlignment = Alignment.TopStart,
@@ -308,9 +312,7 @@ fun MainScreen(vm: MainViewModel) {
                 biometricAvailable = state.biometricAvailable,
                 biometricMessage = state.biometricMessage,
                 onToggleBiometric = vm::setRequireBiometric,
-                localNetworkAvailable = remember(state.showSettings) {
-                    vm.localNetworkAvailable()
-                },
+                localNetworkAvailable = state.networkAvailable,
             )
         }
     }
@@ -445,6 +447,7 @@ private fun SectionHeader(state: UiState) {
             Text(
                 text = when {
                     !state.configured -> "—"
+                    !state.networkAvailable -> "NO CONNECTION"
                     state.refreshing -> "READING"
                     !state.serverReachable -> "OFFLINE"
                     else -> "$count FOUND"
@@ -501,7 +504,7 @@ private fun GuestList(
     }
 }
 
-private enum class GuestRowAction { BUSY, STOP, START }
+private enum class GuestRowAction { STOP, START }
 
 @Composable
 private fun GuestRow(
@@ -519,22 +522,12 @@ private fun GuestRow(
         animationSpec = tween(durationMillis = 420),
         label = "guestStatus-${guest.id}",
     )
-    val rowTint by animateColorAsState(
-        targetValue = if (running) statusColor.copy(alpha = 0.05f) else Color.Transparent,
-        animationSpec = tween(durationMillis = 500),
-        label = "guestTint-${guest.id}",
-    )
-    val rowAction = when {
-        busy -> GuestRowAction.BUSY
-        running -> GuestRowAction.STOP
-        else -> GuestRowAction.START
-    }
+    val rowAction = if (running) GuestRowAction.STOP else GuestRowAction.START
     val quickInteraction = remember { MutableInteractionSource() }
 
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .background(rowTint)
             .padding(start = 16.dp, end = 4.dp, top = 12.dp, bottom = 12.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
@@ -585,7 +578,11 @@ private fun GuestRow(
                     text = guest.status.label.uppercase(),
                     style = MaterialTheme.typography.labelSmall,
                     letterSpacing = 0.6.sp,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    color = if (running) {
+                        statusColor.copy(alpha = 0.9f)
+                    } else {
+                        MaterialTheme.colorScheme.onSurfaceVariant
+                    },
                 )
             }
         }
@@ -602,13 +599,6 @@ private fun GuestRow(
             label = "guestAction-${guest.id}",
         ) { action ->
             when (action) {
-                GuestRowAction.BUSY -> CircularProgressIndicator(
-                    modifier = Modifier
-                        .padding(horizontal = 12.dp)
-                        .size(20.dp),
-                    strokeWidth = 2.dp,
-                )
-
                 GuestRowAction.STOP -> TextButton(
                     onClick = onShutdown,
                     enabled = online && !anyBusy,
@@ -663,18 +653,15 @@ private fun NodePanel(
     val shuttingDown = state.phase == Phase.SHUTTING_DOWN
     val waking = state.phase == Phase.WAKING || state.phase == Phase.WAITING_FOR_SERVER
 
-    val title = when (state.phase) {
-        Phase.WAKING -> "Sending magic"
-        Phase.WAITING_FOR_SERVER -> "Waking up"
-        Phase.SHUTTING_DOWN -> "Powering down"
-        Phase.LOADING_GUESTS -> if (online) "Reading machines" else "Connecting"
-        Phase.STARTING -> "Working"
-        Phase.IDLE -> when {
-            !state.configured -> "Not configured"
-            online -> "Online"
-            !state.networkAvailable -> "No connection"
-            else -> "Offline"
-        }
+    val title = when {
+        !state.configured -> "Not configured"
+        !state.networkAvailable -> "No connection"
+        state.phase == Phase.WAKING -> "Sending magic"
+        state.phase == Phase.WAITING_FOR_SERVER -> "Waking up"
+        state.phase == Phase.SHUTTING_DOWN -> "Powering down"
+        state.phase == Phase.LOADING_GUESTS -> if (online) "Reading machines" else "Connecting"
+        state.phase == Phase.STARTING -> "Working"
+        else -> if (online) "Online" else "Offline"
     }
 
     val running = state.guests.count { it.status == GuestStatus.RUNNING }
@@ -690,10 +677,10 @@ private fun NodePanel(
     )
     val subtitle = when {
         !state.configured -> "Add your Proxmox host in settings to begin."
+        !state.networkAvailable -> "Connect to Wi-Fi or Ethernet to reach ${state.config.host}."
         shuttingDown -> "Watching the API until it goes quiet."
         waking -> "Hold tight — the node is booting."
         online -> "${state.config.host} · $animatedTotal machines, $animatedRunning running"
-        !state.networkAvailable -> "Connect to Wi-Fi or Ethernet to reach ${state.config.host}."
         state.config.host.isNotBlank() -> "${state.config.host} isn't answering. Send it a magic packet."
         else -> "Add your node in settings."
     }
@@ -946,8 +933,8 @@ private fun formatBytes(bytes: Long): String {
 private fun SyncFooter(state: UiState) {
     val label = when {
         !state.configured -> "NOT CONNECTED"
-        state.refreshing -> "SYNCING…"
         !state.networkAvailable -> "NO CONNECTION"
+        state.refreshing -> "SYNCING…"
         !state.serverReachable && state.guests.isNotEmpty() -> "RECONNECTING…"
         !state.serverReachable -> "OFFLINE · RETRYING"
         else -> "LIVE"
@@ -1067,8 +1054,8 @@ private fun EmptyState(state: UiState) {
             Text(
                 text = when {
                     !state.configured -> "No node configured"
-                    state.refreshing -> "Reading machines"
                     !state.networkAvailable -> "No network connection"
+                    state.refreshing -> "Reading machines"
                     !state.serverReachable -> "The node is offline"
                     else -> "No machines found"
                 },
@@ -1079,8 +1066,8 @@ private fun EmptyState(state: UiState) {
             Text(
                 text = when {
                     !state.configured -> "Open settings and add your Proxmox host to get started."
-                    state.refreshing -> "This only takes a moment."
                     !state.networkAvailable -> "Connect to Wi-Fi or Ethernet and the list will return."
+                    state.refreshing -> "This only takes a moment."
                     !state.serverReachable -> "Wake the server and it will connect automatically."
                     else -> "Start a VM or container in Proxmox and it will appear here."
                 },
